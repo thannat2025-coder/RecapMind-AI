@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "ClinicalNote": {
+      "title": "Clinical Note",
+      "description": "Structured CBT clinical note",
+      "type": "object",
+      "properties": {
+        "mood_check": { "type": "string" },
+        "bridge": { "type": "string" },
+        "agenda": { "type": "string" },
+        "homework_review": { "type": "string" },
+        "new_topics": { "type": "string" },
+        "cbt_model": {
+          "type": "object",
+          "properties": {
+            "situation": { "type": "string" },
+            "mood": { "type": "string" },
+            "thoughts": { "type": "string" },
+            "behavior": { "type": "string" },
+            "physical": { "type": "string" }
+          }
+        },
+        "intervention": { "type": "string" },
+        "plan_homework": { "type": "string" },
+        "summary": { "type": "string" },
+        "feedback_appointment": { "type": "string" }
+      },
+      "required": ["mood_check", "bridge", "agenda", "homework_review", "new_topics", "cbt_model", "intervention", "plan_homework", "summary", "feedback_appointment"]
+    },
+    "TrainingData": {
+      "title": "Training Data",
+      "description": "Pair of transcript and final clinical note for model improvement",
+      "type": "object",
+      "properties": {
+        "transcript": { "type": "string" },
+        "final_note": { "$ref": "ClinicalNote" },
+        "model_used": { "type": "string" },
+        "patient_id": { "type": "string" },
+        "session_no": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "author_id": { "type": "string" }
+      },
+      "required": ["transcript", "final_note", "model_used", "created_at", "author_id"]
+    }
+  },
+  "firestore": {
+    "/training_data/{dataId}": {
+      "schema": "TrainingData",
+      "description": "Collection of transcript-note pairs for future fine-tuning and RAG"
+    }
+  }
+}
