@@ -28,14 +28,21 @@ import {
   ShieldAlert,
   Save,
   LogOut,
-  LogIn
+  LogIn,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
-import { Tab, InputMode, ClinicalNote, SafetyStatus, GoldenCase } from './types';
-import { GOLDEN_CASES } from './constants';
+import * as pdfjs from 'pdfjs-dist';
+import mammoth from 'mammoth';
+import { Tab, InputMode, ClinicalNote, SafetyStatus, CaseExample } from './types';
+
+// PDF Worker setup
+pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+import { CASE_EXAMPLES } from './constants';
 import { checkSafety, deIdentify, retrieveRagCases } from './utils';
+import { compressAudioFile } from './utils/audioCompressor';
 import { generateClinicalNote } from './lib/gemini';
 import { auth, loginWithGoogle, logout, saveTrainingData } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -67,19 +74,31 @@ export default function App() {
   const [sessionNo, setSessionNo] = useState('');
   const [caseTheme, setCaseTheme] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('กำลังประมวลผล...');
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
-  const [ragResults, setRagResults] = useState<(GoldenCase & { sim: number })[]>([]);
+  const [ragResults, setRagResults] = useState<(CaseExample & { sim: number })[]>([]);
   const [notes, setNotes] = useState<Record<string, ClinicalNote>>({});
   const [selectedModel, setSelectedModel] = useState<'baseline' | 'rag' | 'finetuned'>('rag');
-  const [hitl, setHitl] = useState<Record<number, boolean>>({});
-  const [isCoSigned, setIsCoSigned] = useState(false);
+  const [hitl, setHitl] = useState<Record<string, boolean[]>>({
+    baseline: [false, false, false, false, false],
+    rag: [false, false, false, false, false],
+    finetuned: [false, false, false, false, false]
+  });
+  const [signedModels, setSignedModels] = useState<Record<string, boolean>>({});
+  const [dismissedRisk, setDismissedRisk] = useState<Record<string, boolean>>({});
+  const [includeHitlInExport, setIncludeHitlInExport] = useState(true);
+  const [includeSignInExport, setIncludeSignInExport] = useState(true);
   const [recording, setRecording] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
   const [recTime, setRecTime] = useState(0);
   const [hasConsented, setHasConsented] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, ClinicalNote>>({});
   const recInterval = useRef<NodeJS.Timeout | null>(null);
-  const noteRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<any>(null);
+  const noteRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -110,7 +129,7 @@ export default function App() {
   };
 
   const loadCase = (id: string) => {
-    const c = GOLDEN_CASES.find(x => x.id === id);
+    const c = CASE_EXAMPLES.find(x => x.id === id);
     if (c) {
       setTranscript(c.tx);
       setCaseTheme(c.th);
@@ -119,47 +138,178 @@ export default function App() {
   };
 
   const startRecording = () => {
+    // Check if SpeechRecognition is available
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'th-TH'; // Primary lang is Thai
+
+      recognition.onresult = (event: any) => {
+        let currentInterim = '';
+        let currentFinal = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            currentFinal += event.results[i][0].transcript;
+          } else {
+            currentInterim += event.results[i][0].transcript;
+          }
+        }
+
+        setInterimTranscript(currentInterim);
+        if (currentFinal) {
+          setTranscript(prev => deIdentify(prev + ' ' + currentFinal));
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error", event.error);
+        if (event.error === 'not-allowed') {
+          alert('กรุณาอนุญาตการเข้าถึงไมโครโฟนเพื่อใช้งานระบบอัดเสียง');
+          setRecording(false);
+        }
+      };
+
+      recognition.onend = () => {
+        if (recording) recognition.start(); // Keep recording if still in recording state
+      };
+
+      recognition.start();
+      recognitionRef.current = recognition;
+    }
+
     setRecording(true);
+    setTranscript('');
   };
 
   const stopRecording = () => {
     setRecording(false);
-    // Simulate STT
+    setInterimTranscript('');
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
     setIsLoading(true);
-    setTimeout(() => {
-      const randomCase = GOLDEN_CASES[Math.floor(Math.random() * GOLDEN_CASES.length)];
-      setTranscript(randomCase.tx);
-      setCaseTheme(randomCase.th);
-      setSafetyStatus(checkSafety(randomCase.tx));
+    setLoadingMessage('กำลังโหลดโครงสร้างไฟล์แพ็คเก็ต...');
+    const fileName = file.name.toLowerCase();
+
+    try {
+      let extractedText = '';
+
+      const isMedia = fileName.endsWith('.mp3') || fileName.endsWith('.wav') || fileName.endsWith('.m4a') || fileName.endsWith('.mp4');
+      if (isMedia && file.size > 250 * 1024 * 1024) {
+        throw new Error('ขนาดไฟล์สื่อของคุณใหญ่กว่า 250MB เกินระดับการตระเตรียมของอุปกรณ์ กรุณาอัปโหลดไฟล์ที่สั้นลง');
+      }
+
+      if (fileName.endsWith('.txt')) {
+        setLoadingMessage('กำลังอ่านข้อความจากไฟล์ Text...');
+        extractedText = await file.text();
+      } else if (fileName.endsWith('.docx')) {
+        setLoadingMessage('กำลังแกะข้อความจากไฟล์ Word (.docx)...');
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        extractedText = result.value;
+      } else if (fileName.endsWith('.pdf')) {
+        setLoadingMessage('กำลังถอดพจนานุกรมประมวลคำจากไฟล์เอกสาร PDF...');
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          setLoadingMessage(`กำลังอ่านหน้าเอกสาร PDF [${i}/${pdf.numPages}]...`);
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          fullText += textContent.items.map((item: any) => item.str).join(' ') + '\n';
+        }
+        extractedText = fullText;
+      } else if (isMedia) {
+        const compressed = await compressAudioFile(file, (msg) => {
+          setLoadingMessage(msg);
+        });
+
+        setLoadingMessage('กำลังเชื่อมต่อเซิร์ฟเวอร์ และเริ่มขั้นตอนการสืบค้นถอดความจิตเวชภาษาไทยด้วย Gemini-3.5-flash...');
+        const response = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            audioData: compressed.data,
+            mimeType: compressed.mimeType
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'ถอดความล้มเหลวหรือไฟล์สตรีมเสียงขัดข้อง');
+        }
+
+        const data = await response.json();
+        extractedText = data.text || '';
+      } else {
+        alert('ประเภทไฟล์ไม่รองรับ กรุณาใช้ .txt, .docx, .pdf หรือไฟล์เสียง/วีดีโอ (.mp3, .wav, .mp4)');
+        setIsLoading(false);
+        return;
+      }
+
+      if (extractedText) {
+        setLoadingMessage('เสร็จสิ้นขั้นตอนการถอดอักษร กำลังเข้ารหัสนิรภัยจำแลงข้อมูล (De-Identification)...');
+        // Automatically de-identify when uploading documents
+        const cleanedText = deIdentify(extractedText);
+        setTranscript(cleanedText);
+        setSafetyStatus(checkSafety(cleanedText));
+        alert(`ถอดอักษรและดึงข้อความจากไฟล์ ${file.name} ลงในช่อง Transcript เรียบร้อยแล้ว!`);
+      }
+    } catch (error) {
+      console.error("File upload/processing failed", error);
+      alert('เกิดข้อผิดพลาดในการประมวลผลไฟล์: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   const generateAllNotes = async () => {
     if (!transcript.trim()) return;
     setIsLoading(true);
-    setIsCoSigned(false);
-    setHitl({});
+    setLoadingMessage('กำลังปรับข้อมูลฐานความรู้ คัดกรองรหัสและเปรียบเทียบคำถอดความจิตเวชจาก 3 โมเดล...');
+    setSignedModels({});
+    setHitl({
+      baseline: [false, false, false, false, false],
+      rag: [false, false, false, false, false],
+      finetuned: [false, false, false, false, false]
+    });
     
     const safety = checkSafety(transcript);
     setSafetyStatus(safety);
-
+ 
     const retrieved = retrieveRagCases(transcript);
     setRagResults(retrieved);
-
+ 
     try {
       // Parallel generation
       const [baseline, rag, finetuned] = await Promise.allSettled([
-        generateClinicalNote(transcript, 'baseline'),
-        generateClinicalNote(transcript, 'rag', retrieved),
-        generateClinicalNote(transcript, 'finetuned')
+        generateClinicalNote(transcript, 'baseline', undefined, caseTheme),
+        generateClinicalNote(transcript, 'rag', retrieved, caseTheme),
+        generateClinicalNote(transcript, 'finetuned', undefined, caseTheme)
       ]);
-
-      setNotes({
+ 
+      const generatedNotes = {
         baseline: baseline.status === 'fulfilled' ? baseline.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' },
         rag: rag.status === 'fulfilled' ? rag.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' },
         finetuned: finetuned.status === 'fulfilled' ? finetuned.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' }
-      });
+      };
+
+      setNotes(generatedNotes);
+      // Immediately set drafts to ensure editability
+      setNoteDrafts(JSON.parse(JSON.stringify(generatedNotes)));
       
       setSelectedModel('rag');
     } catch (error) {
@@ -169,52 +319,75 @@ export default function App() {
     }
   };
 
-  const toggleHitl = (i: number) => {
-    setHitl(prev => ({ ...prev, [i]: !prev[i] }));
+  const toggleHitl = (modelId: string, index: number) => {
+    setHitl(prev => {
+      const newItems = [...(prev[modelId] || [false, false, false, false, false])];
+      newItems[index] = !newItems[index];
+      return { ...prev, [modelId]: newItems };
+    });
   };
 
-  const isHitlComplete = Object.values(hitl).filter(Boolean).length === 5;
-
-  const handleCoSign = () => {
-    setIsCoSigned(true);
+  const isHitlComplete = (modelId: string) => {
+    return (hitl[modelId] || []).filter(Boolean).length === 5;
   };
 
-  const handleCopyNote = async () => {
-    if (!currentNote) return;
+  const handleCoSign = async (modelId: string) => {
+    setSignedModels(prev => ({ ...prev, [modelId]: true }));
+    
+    // Auto-save to training database as "Committed/Co-signed" record
+    const note = noteDrafts[modelId] || notes[modelId];
+    if (user && note) {
+       try {
+         await saveTrainingData(transcript, note, modelId + "-signed", patientId, sessionNo);
+       } catch (err) {
+         console.warn("Failed to background save co-signed note", err);
+       }
+    }
+  };
+
+  const handleCopyNote = async (modelId: 'baseline' | 'rag' | 'finetuned') => {
+    const note = noteDrafts[modelId] || notes[modelId];
+    if (!note) return;
     
     const textToCopy = `
 [CLINICAL NOTE - RECAPMIND]
 Patient ID: ${patientId || 'N/A'}
 Session No: ${sessionNo || 'N/A'}
 Theme: ${caseTheme || 'N/A'}
-Model: ${selectedModel}
+Model: ${modelId}
 
-1. Mood Check: ${currentNote.mood_check}
-2. Bridge: ${currentNote.bridge}
-3. Agenda: ${currentNote.agenda}
-4. Homework Review: ${currentNote.homework_review}
-5. New Topics: ${currentNote.new_topics}
+1. Mood Check: ${note.mood_check}
+2. Bridge: ${note.bridge}
+3. Agenda: ${note.agenda}
+4. Homework Review: ${note.homework_review}
+5. New Topics: ${note.new_topics}
 
 CBT MODEL:
-- Situation: ${currentNote.cbt_model.situation}
-- Mood: ${currentNote.cbt_model.mood}
-- Thought: ${currentNote.cbt_model.thoughts}
-- Behavior: ${currentNote.cbt_model.behavior}
-- Physical: ${currentNote.cbt_model.physical}
+- Situation: ${note.cbt_model.situation}
+- Mood: ${note.cbt_model.mood}
+- Thought: ${note.cbt_model.thoughts}
+- Behavior: ${note.cbt_model.behavior}
+- Physical: ${note.cbt_model.physical}
 
-7. Intervention: ${currentNote.intervention}
-8. Plan/Homework: ${currentNote.plan_homework}
-9. Summary: ${currentNote.summary}
-10. Feedback/Appointment: ${currentNote.feedback_appointment}
-    `.trim();
+7. Intervention: ${note.intervention}
+8. Plan/Homework: ${note.plan_homework}
+9. Summary: ${note.summary}
+10. Feedback/Appointment: ${note.feedback_appointment}
+
+--------------------------------------------------
+[RecapMind Clinical Decision Support System]
+Developed by Thanvaruj Booranasuksakul
+Master of Science Program in Mental Health
+Generated: ${new Date().toLocaleString('th-TH')}
+`.trim();
 
     try {
       await navigator.clipboard.writeText(textToCopy);
-      alert('คัดลอกข้อความลง Clipboard เรียบร้อยแล้ว');
+      alert(`คัดลอกข้อความ (${modelId}) ลง Clipboard เรียบร้อยแล้ว`);
       
       if (user) {
         setIsSaving(true);
-        await saveTrainingData(transcript, currentNote, selectedModel, patientId, sessionNo);
+        await saveTrainingData(transcript, note, modelId, patientId, sessionNo);
         setIsSaving(false);
       }
     } catch (err) {
@@ -222,39 +395,171 @@ CBT MODEL:
     }
   };
 
-  const handleExportPDF = async () => {
-    if (!noteRef.current || !currentNote) return;
+  const handleSaveAsText = (modelId: string) => {
+    const note = noteDrafts[modelId] || notes[modelId];
+    if (!note) return;
+
+    let text = `RECAPMIND CLINICAL NOTE DRAFT (${modelId.toUpperCase()})\n`;
+    text += `=========================================\n`;
+    text += `Patient ID: ${patientId || 'N/A'}\n`;
+    text += `Session No: ${sessionNo || 'N/A'}\n`;
+    text += `Case Theme: ${caseTheme || 'N/A'}\n`;
+    text += `Generated Date: ${new Date().toLocaleString()}\n`;
+    text += `=========================================\n\n`;
+
+    text += `1. MOOD CHECK:\n${note.mood_check || 'N/A'}\n\n`;
+    text += `2. BRIDGE:\n${note.bridge || 'N/A'}\n\n`;
+    text += `3. AGENDA:\n${note.agenda || 'N/A'}\n\n`;
+    text += `4. HOMEWORK REVIEW:\n${note.homework_review || 'N/A'}\n\n`;
+    text += `5. NEW TOPICS:\n${note.new_topics || 'N/A'}\n\n`;
+
+    text += `6. CBT FORMULATION:\n`;
+    text += `   - Situation: ${note.cbt_model?.situation || 'N/A'}\n`;
+    text += `   - Mood: ${note.cbt_model?.mood || 'N/A'}\n`;
+    text += `   - Thoughts: ${note.cbt_model?.thoughts || 'N/A'}\n`;
+    text += `   - Behavior: ${note.cbt_model?.behavior || 'N/A'}\n`;
+    text += `   - Physical: ${note.cbt_model?.physical || 'N/A'}\n\n`;
+
+    text += `7. INTERVENTION:\n${note.intervention || 'N/A'}\n\n`;
+    text += `8. HOMEWORK:\n${note.plan_homework || 'N/A'}\n\n`;
+    text += `9. SUMMARY:\n${note.summary || 'N/A'}\n\n`;
+    text += `10. RISK & APPOINTMENT:\n${note.feedback_appointment || 'N/A'}\n\n`;
+
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `recapmind_note_${modelId}_${patientId || 'patient'}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+    alert(`ดาวน์โหลดไฟล์เวชระเบียน (${modelId}) เรียบร้อยแล้ว`);
+  };
+
+  const handleExportPDF = async (modelId: 'baseline' | 'rag' | 'finetuned') => {
+    const ref = noteRefs.current[modelId];
+    const note = noteDrafts[modelId] || notes[modelId];
+    if (!ref || !note) {
+      alert('ไม่พบข้อมูลที่จะ Export');
+      return;
+    }
     
     try {
       setIsLoading(true);
-      const canvas = await html2canvas(noteRef.current, {
+      
+      // Temporary style to expand textareas for full capture
+      const textareas = ref.querySelectorAll('textarea');
+      const originalStyles = Array.from(textareas).map(ta => {
+        const hta = ta as HTMLTextAreaElement;
+        return {
+          height: hta.style.height,
+          overflow: hta.style.overflow
+        };
+      });
+      
+      textareas.forEach(ta => {
+        const hta = ta as HTMLTextAreaElement;
+        hta.style.height = hta.scrollHeight + 'px';
+        hta.style.overflow = 'visible';
+      });
+
+      // Hide sections if requested
+      const hitlSections = ref.querySelectorAll('.hitl-section');
+      const originalHitlDisplay = Array.from(hitlSections).map(s => (s as HTMLElement).style.display);
+      if (!includeHitlInExport) {
+        hitlSections.forEach(s => {
+          (s as HTMLElement).style.display = 'none';
+        });
+      }
+
+      const signSections = ref.querySelectorAll('.sign-section');
+      const originalSignDisplay = Array.from(signSections).map(s => (s as HTMLElement).style.display);
+      if (!includeSignInExport) {
+        signSections.forEach(s => {
+          (s as HTMLElement).style.display = 'none';
+        });
+      }
+
+      // Wait for layout to settle
+      await new Promise(r => setTimeout(r, 500));
+      
+      const canvas = await html2canvas(ref, {
         scale: 2,
         useCORS: true,
         logging: false,
-        backgroundColor: '#ffffff'
+        backgroundColor: '#ffffff',
+        scrollY: -window.scrollY,
+        windowWidth: ref.scrollWidth,
+        windowHeight: ref.scrollHeight
       });
       
-      const imgData = canvas.toDataURL('image/png');
+      // Revert styles
+      textareas.forEach((ta, i) => {
+        const hta = ta as HTMLTextAreaElement;
+        hta.style.height = originalStyles[i].height;
+        hta.style.overflow = originalStyles[i].overflow;
+      });
+
+      if (!includeHitlInExport) {
+        hitlSections.forEach((s, i) => {
+          (s as HTMLElement).style.display = originalHitlDisplay[i];
+        });
+      }
+
+      if (!includeSignInExport) {
+        signSections.forEach((s, i) => {
+          (s as HTMLElement).style.display = originalSignDisplay[i];
+        });
+      }
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: 'a4'
+        format: 'a4',
+        compress: true
       });
       
       const imgWidth = 210;
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
       
-      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
-      pdf.save(`ClinicalNote_${patientId || 'Note'}_${new Date().toLocaleDateString()}.pdf`);
+      // Basic multipage support if content is very long
+      let heightLeft = imgHeight;
+      let position = 0;
+      const pageHeight = 297;
+
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      const fileName = `RecapMind_${modelId}_${patientId || 'Note'}_${new Date().getTime()}.pdf`;
+      
+      // Fallback for iframe environments: save as blob then trigger download
+      const pdfBlob = pdf.output('blob');
+      const blobUrl = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
 
       if (user) {
         setIsSaving(true);
-        await saveTrainingData(transcript, currentNote, selectedModel, patientId, sessionNo);
+        await saveTrainingData(transcript, note, modelId, patientId, sessionNo);
         setIsSaving(false);
       }
+      
+      alert(`Export สำเร็จ: ${fileName}`);
     } catch (error) {
       console.error('PDF Export failed', error);
-      alert('เกิดข้อผิดพลาดในการ Export PDF');
+      alert('เกิดข้อผิดพลาดในการ Export PDF: ' + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsLoading(false);
     }
@@ -272,6 +577,55 @@ CBT MODEL:
     const m = Math.floor(s / 60).toString().padStart(2, '0');
     const sec = (s % 60).toString().padStart(2, '0');
     return `${m}:${sec}`;
+  };
+
+  useEffect(() => {
+    const newDrafts: Record<string, ClinicalNote> = {};
+    Object.entries(notes).forEach(([key, note]) => {
+      newDrafts[key] = JSON.parse(JSON.stringify(note)); // Deep clone
+    });
+    setNoteDrafts(newDrafts);
+  }, [notes]);
+
+  const handleNoteFieldChange = (modelId: string, field: keyof ClinicalNote, value: any) => {
+    setNoteDrafts(prev => {
+      const currentDraft = prev[modelId] || JSON.parse(JSON.stringify(notes[modelId] || EMPTY_NOTE));
+      return {
+        ...prev,
+        [modelId]: {
+          ...currentDraft,
+          [field]: value
+        }
+      };
+    });
+  };
+
+  const handleCbtFieldChange = (modelId: string, field: keyof ClinicalNote['cbt_model'], value: string) => {
+    setNoteDrafts(prev => {
+      const currentDraft = prev[modelId] || JSON.parse(JSON.stringify(notes[modelId] || EMPTY_NOTE));
+      return {
+        ...prev,
+        [modelId]: {
+          ...currentDraft,
+          cbt_model: {
+            ...currentDraft.cbt_model,
+            [field]: value
+          }
+        }
+      };
+    });
+  };
+
+  const saveAllChanges = (modelId: string) => {
+    const draft = noteDrafts[modelId];
+    if (!draft) return;
+    
+    setNotes(prev => ({
+      ...prev,
+      [modelId]: JSON.parse(JSON.stringify(draft))
+    }));
+    
+    alert(`บันทึกการแก้ไขเวชระเบียน (${modelId}) เรียบร้อยแล้ว`);
   };
 
   const currentNote = notes[selectedModel] || null;
@@ -432,43 +786,104 @@ CBT MODEL:
                             {mode === InputMode.RECORD && '🎙️ อัดเสียง'}
                             {mode === InputMode.UPLOAD && '📁 Upload'}
                             {mode === InputMode.TYPE && '✏️ พิมพ์'}
-                            {mode === InputMode.CASE && '📂 Golden Case'}
+                            {mode === InputMode.CASE && '📂 เคสตัวอย่าง'}
                           </button>
                         ))}
                       </div>
 
                       {inputMode === InputMode.RECORD && (
-                        <div className="text-center p-3 bg-[#F9FAFB] border border-[#E3E8EF] rounded-md">
-                          <div className="text-[24px] font-extrabold font-mono tracking-wider">{formatTime(recTime)}</div>
-                          <p className={`text-[11px] font-medium my-1 ${recording ? 'text-red-600 animate-pulse' : 'text-slate-500'}`}>
-                            {recording ? '● กำลังอัดเสียง...' : 'พร้อมอัดเสียง • Whisper STT'}
+                        <div className="text-center p-3 bg-[#F9FAFB] border border-[#E3E8EF] rounded-md relative overflow-hidden">
+                          {recording && (
+                            <motion.div 
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 0.05 }}
+                              className="absolute inset-0 bg-red-600 pointer-events-none"
+                            />
+                          )}
+                          <div className="text-[24px] font-extrabold font-mono tracking-wider relative z-10">{formatTime(recTime)}</div>
+                          <p className={`text-[11px] font-medium my-1 relative z-10 ${recording ? 'text-red-600' : 'text-slate-500'}`}>
+                            {recording ? '● กำลังอัดเสียง (Live Transcript)...' : 'พร้อมอัดเสียง • Real-time STT'}
                           </p>
                           <button 
                             onClick={recording ? stopRecording : startRecording}
-                            className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-lg transition-transform hover:scale-105 active:scale-95 shadow-md mx-auto ${recording ? 'bg-red-800' : 'bg-red-600'}`}
+                            className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-lg transition-transform hover:scale-105 active:scale-95 shadow-md mx-auto relative z-10 ${recording ? 'bg-red-800' : 'bg-red-600'}`}
                           >
-                            {recording ? <div className="w-4 h-4 bg-white rounded-sm" /> : <Mic size={20} />}
+                            {recording ? (
+                              <motion.div 
+                                animate={{ scale: [1, 1.2, 1] }}
+                                transition={{ repeat: Infinity, duration: 1.5 }}
+                                className="w-4 h-4 bg-white rounded-sm" 
+                              />
+                            ) : <Mic size={20} />}
                           </button>
+                          
+                          <div className="mt-2.5 p-2 bg-blue-50/50 border border-blue-100 rounded text-[10px] text-[#1E3A8A] text-left leading-relaxed flex gap-1.5 items-start">
+                            <Info size={12} className="text-blue-600 shrink-0 mt-0.5" />
+                            <span>
+                              <b>ระเบียบถอดคำความยาวไม่จำกัด:</b> ทำงานบน Web Speech API ที่เป็นโมเดลฟรีจากเว็บบราวเซอร์มาตรฐาน ไม่จำกัด Token ได้คำพูดครบถ้วน ปลอดภัยแบบ On-Device 100%
+                            </span>
+                          </div>
                         </div>
                       )}
 
                       {inputMode === InputMode.UPLOAD && (
-                        <div className="border-2 border-dashed border-[#CBD5E1] rounded-md p-4 text-center cursor-pointer bg-[#F9FAFB] hover:bg-slate-100 transition-all">
-                          <Upload size={24} className="mx-auto mb-1 text-[#64748B]" />
-                          <div className="text-[12px] font-semibold">คลิกเพื่อเลือกไฟล์</div>
-                          <div className="text-[10px] text-slate-400">.mp3 .mp4 .wav .txt</div>
+                        <div 
+                          onClick={() => !isLoading && fileInputRef.current?.click()}
+                          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                          onDrop={(e) => {
+                            if (isLoading) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                              const dt = new DataTransfer();
+                              dt.items.add(e.dataTransfer.files[0]);
+                              if (fileInputRef.current) {
+                                fileInputRef.current.files = dt.files;
+                                const event = { target: fileInputRef.current } as React.ChangeEvent<HTMLInputElement>;
+                                handleFileUpload(event);
+                              }
+                            }
+                          }}
+                          className={`border-2 border-dashed border-[#CBD5E1] rounded-md p-5 text-center cursor-pointer bg-[#F9FAFB] hover:bg-slate-100 transition-all ${isLoading ? 'opacity-90 border-blue-500 bg-blue-50/20 cursor-wait' : ''}`}
+                        >
+                          {isLoading ? (
+                            <div className="flex flex-col items-center justify-center space-y-2 py-4">
+                              <motion.div
+                                animate={{ rotate: 360 }}
+                                transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                                className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"
+                              />
+                              <div className="text-[12px] font-bold text-blue-800">กำลังประมวลผลข้อมูลส่งคำถอดความ</div>
+                              <div className="text-[10px] text-slate-600 px-3 leading-relaxed animate-pulse">
+                                {loadingMessage}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <input 
+                                type="file" 
+                                ref={fileInputRef} 
+                                onChange={handleFileUpload} 
+                                className="hidden" 
+                                accept=".txt,.docx,.pdf,.mp3,.wav,.m4a,.mp4"
+                              />
+                              <Upload size={24} className="mx-auto mb-1 text-[#64748B]" />
+                              <div className="text-[12px] font-semibold">คลิกเพื่อเลือกไฟล์ หรือลากวางที่นี่</div>
+                              <div className="text-[10px] text-slate-400">.docx .pdf .mp3 .mp4 .txt</div>
+                            </>
+                          )}
                         </div>
                       )}
 
                       {inputMode === InputMode.CASE && (
                         <div className="space-y-2">
-                          <label className="text-[11.5px] font-semibold text-[#4A5568]">เลือก Golden Case ตัวอย่าง</label>
+                          <label className="text-[11.5px] font-semibold text-[#4A5568]">เลือกเคสตัวอย่าง</label>
                           <select 
                             onChange={(e) => loadCase(e.target.value)}
                             className="w-full text-[13px] border border-[#CBD5E1] rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#1549C7]"
                           >
                             <option value="">— เลือกเคส —</option>
-                            {GOLDEN_CASES.map(c => <option key={c.id} value={c.id}>{c.id}: {c.th}</option>)}
+                            {CASE_EXAMPLES.map(c => <option key={c.id} value={c.id}>{c.id}: {c.th}</option>)}
                           </select>
                         </div>
                       )}
@@ -495,10 +910,10 @@ CBT MODEL:
                         </div>
                       )}
                       <textarea 
-                        value={transcript}
+                        value={transcript + (interimTranscript ? ' ' + interimTranscript : '')}
                         onChange={(e) => setTranscript(e.target.value)}
                         placeholder="วาง transcript ที่นี่..."
-                        className="w-full h-48 text-[12.5px] border border-[#CBD5E1] rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#1549C7] resize-none"
+                        className={`w-full h-48 text-[12.5px] border rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-100 resize-none transition-colors ${recording ? 'bg-slate-50 border-red-200 ring-2 ring-red-50' : 'bg-white border-[#CBD5E1] focus:border-[#1549C7]'}`}
                       />
                       <div className="text-[10px] text-slate-400 mt-1">{transcript.length.toLocaleString()} ตัวอักษร</div>
                     </div>
@@ -549,241 +964,328 @@ CBT MODEL:
                      </h2>
                    </div>
                    
-                   {/* Model Switcher */}
-                   {Object.keys(notes).length > 0 && (
-                     <div className="grid grid-cols-3 gap-2 mt-3">
-                       {['baseline', 'rag', 'finetuned'].map((m) => (
-                         <button
-                           key={m}
-                           onClick={() => setSelectedModel(m as any)}
-                           className={`p-2 rounded-lg border-2 text-center transition-all ${selectedModel === m ? 'border-[#1549C7] bg-blue-50 ring-2 ring-blue-100' : 'border-[#CBD5E1] bg-white hover:border-[#1549C7]'}`}
-                         >
-                           <div className={`text-[11px] font-extrabold ${selectedModel === m ? 'text-[#1549C7]' : 'text-slate-600'}`}>
-                             {m === 'baseline' && '📝 Baseline'}
-                             {m === 'rag' && '🧠 RAG (Few-shot)'}
-                             {m === 'finetuned' && '💾 Fine-tuned'}
-                           </div>
-                           <div className="text-[9px] text-slate-400 uppercase tracking-tighter">
-                             {m === 'baseline' && 'Zero-shot'}
-                             {m === 'rag' && 'Data Linked'}
-                             {m === 'finetuned' && 'Expert Logic'}
-                           </div>
-                         </button>
-                       ))}
-                     </div>
-                   )}
+                    {/* Model Info Header */}
+                    <div className="flex items-center gap-2 mt-2">
+                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                         {Object.keys(notes).length} Models Compared
+                       </span>
+                       <span className="text-[10px] text-slate-400 font-medium">Gemini 3 Flash Analyze & Formulate</span>
+                    </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-5 custom-scrollbar">
-                  {!notes[selectedModel] ? (
+                <div className="flex-1 overflow-y-auto p-5 custom-scrollbar space-y-12 bg-slate-50">
+                  {Object.keys(notes).length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400">
                       <BrainCircuit size={48} className="opacity-20 mb-4" />
-                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">Gemini 3 Flash จะวิเคราะห์ตามโครงสร้างสารสนเทศ CBT</span></p>
+                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">ระบบจะวิเคราะห์และสรุปด้วย 3 โมเดลพร้อมกันเพื่อให้เลือกใช้งาน</span></p>
                     </div>
                   ) : (
-                    <div className="space-y-4 max-w-4xl mx-auto" ref={noteRef}>
-                      {/* Safety Alert */}
-                      {safetyStatus?.risk && (
-                        <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex gap-3 text-red-800">
-                           <AlertTriangle size={24} className="shrink-0" />
-                           <div>
-                             <h4 className="font-bold text-[13px]">SAFETY ALERT — SI/SH Keywords Found</h4>
-                             <p className="text-[11.5px] opacity-90">ระบบตรวจพบความเสี่ยงด้านจริยธรรม/ความปลอดภัย: {safetyStatus.kws.join(', ')}</p>
-                           </div>
+                    ['baseline', 'rag', 'finetuned'].map((m) => {
+                      const note = notes[m];
+                      if (!note) return null;
+                      const draft = noteDrafts[m] || note;
+
+                      return (
+                        <div 
+                          key={m} 
+                          ref={(el) => (noteRefs.current[m] = el)}
+                          className={`space-y-4 max-w-4xl mx-auto p-6 rounded-2xl border bg-white shadow-md relative transition-all ${selectedModel === m ? 'ring-2 ring-blue-500 border-transparent shadow-blue-100' : 'border-slate-200 shadow-slate-100 hover:shadow-md'}`}
+                          onClick={() => setSelectedModel(m as any)}
+                        >
+                          {/* Model Ribbon */}
+                          <div className={`absolute top-0 right-0 px-4 py-1 text-[10px] font-black uppercase tracking-widest text-white rounded-bl-xl ${m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
+                            {m} model
+                          </div>
+
+                          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white ${m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
+                              {m === 'baseline' && <FileText size={18} />}
+                              {m === 'rag' && <Database size={18} />}
+                              {m === 'finetuned' && <Zap size={18} />}
+                            </div>
+                            <div className="flex-1">
+                               <div className="flex justify-between items-start">
+                                 <div>
+                                   <h3 className="text-[14px] font-bold">
+                                     {m === 'baseline' && 'Baseline Generation (Zero-shot)'}
+                                     {m === 'rag' && 'RAG Enhanced (Clinical KB)'}
+                                     {m === 'finetuned' && 'Fine-tuned (Expert Logic)'}
+                                   </h3>
+                                   <div className="flex gap-2 items-center mt-0.5">
+                                      <p className="text-[10px] text-slate-400 font-medium">AI Clinical Scribe Draft • Gemini 3 Flash</p>
+                                      {patientId && <span className="text-[10px] font-mono bg-slate-100 px-1.5 rounded text-slate-600">ID: {patientId}</span>}
+                                      {sessionNo && <span className="text-[10px] font-mono bg-slate-100 px-1.5 rounded text-slate-600">SS: {sessionNo}</span>}
+                                   </div>
+                                 </div>
+                                 <button 
+                                   onClick={(e) => { e.stopPropagation(); saveAllChanges(m); }}
+                                   className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-bold shadow-sm transition-all"
+                                 >
+                                   <Save size={14} /> Save All Changes
+                                 </button>
+                               </div>
+                            </div>
+                          </div>
+
+                          {/* Section Summaries */}
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div className="space-y-3">
+                              {[
+                                { id: 1, k: 'mood_check', l: 'Mood Check' },
+                                { id: 2, k: 'bridge', l: 'Bridge' },
+                                { id: 3, k: 'agenda', l: 'Agenda' },
+                                { id: 4, k: 'homework_review', l: 'Homework Review' },
+                                { id: 5, k: 'new_topics', l: 'New Topics' },
+                              ].map(f => (
+                                <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm">
+                                   <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">{f.id}. {f.l}</div>
+                                   <textarea 
+                                     value={(noteDrafts[m] as any)?.[f.k] || ''}
+                                     onChange={(e) => handleNoteFieldChange(m, f.k as keyof ClinicalNote, e.target.value)}
+                                     placeholder="N/A"
+                                     className="w-full text-[11.5px] leading-relaxed border-none bg-transparent focus:ring-0 resize-none min-h-[60px] custom-scrollbar"
+                                   />
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="space-y-4">
+                              {/* Editable CBT Diagram */}
+                              <div className="bg-gradient-to-br from-blue-50/30 to-teal-50/30 border border-blue-100 rounded-xl p-3">
+                                <div className="text-[10px] font-bold text-blue-800 uppercase mb-2 flex items-center gap-2">
+                                  <div className="w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center text-[9px]">6</div>
+                                  CBT Formulation
+                                </div>
+                                
+                                <div className="space-y-2">
+                                  <div className="bg-white rounded-lg p-2 border border-amber-200 shadow-sm">
+                                    <div className="text-[8px] font-bold text-amber-600 uppercase">Situation</div>
+                                    <textarea 
+                                      value={draft.cbt_model.situation || ''} 
+                                      onChange={(e) => handleCbtFieldChange(m, 'situation', e.target.value)}
+                                      className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                    />
+                                  </div>
+                                  
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="bg-white rounded-lg p-2 border border-red-200 shadow-sm">
+                                      <div className="text-[8px] font-bold text-red-600 uppercase">Mood</div>
+                                      <textarea 
+                                        value={draft.cbt_model.mood || ''} 
+                                        onChange={(e) => handleCbtFieldChange(m, 'mood', e.target.value)}
+                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                      />
+                                    </div>
+                                    <div className="bg-white rounded-lg p-2 border border-blue-200 shadow-sm">
+                                      <div className="text-[8px] font-bold text-blue-600 uppercase">Thought</div>
+                                      <textarea 
+                                        value={draft.cbt_model.thoughts || ''} 
+                                        onChange={(e) => handleCbtFieldChange(m, 'thoughts', e.target.value)}
+                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                      />
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="bg-white rounded-lg p-2 border border-teal-200 shadow-sm">
+                                      <div className="text-[8px] font-bold text-teal-600 uppercase">Behavior</div>
+                                      <textarea 
+                                        value={draft.cbt_model.behavior || ''} 
+                                        onChange={(e) => handleCbtFieldChange(m, 'behavior', e.target.value)}
+                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                      />
+                                    </div>
+                                    <div className="bg-white rounded-lg p-2 border border-green-200 shadow-sm">
+                                      <div className="text-[8px] font-bold text-green-600 uppercase">Physical</div>
+                                      <textarea 
+                                        value={draft.cbt_model.physical || ''} 
+                                        onChange={(e) => handleCbtFieldChange(m, 'physical', e.target.value)}
+                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="flex justify-end pt-1">
+                                      <button 
+                                        onClick={() => saveAllChanges(m)}
+                                        className="flex items-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[9px] font-bold shadow-sm transition-all"
+                                      >
+                                        <Save size={10} /> Save Changes
+                                      </button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="space-y-3">
+                                {[
+                                  { id: 7, k: 'intervention', l: 'Intervention' },
+                                  { id: 8, k: 'plan_homework', l: 'Homework' },
+                                  { id: 9, k: 'summary', l: 'Summary' },
+                                  { id: 10, k: 'feedback_appointment', l: 'Risk & Appt' },
+                                ].map(f => (
+                                  <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm">
+                                     <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">{f.id}. {f.l}</div>
+                                     <textarea 
+                                       value={(noteDrafts[m] as any)?.[f.k] || ''}
+                                       onChange={(e) => handleNoteFieldChange(m, f.k as keyof ClinicalNote, e.target.value)}
+                                       placeholder="N/A"
+                                       className="w-full text-[11.5px] leading-relaxed border-none bg-transparent focus:ring-0 resize-none min-h-[60px] custom-scrollbar"
+                                     />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Export-only Footer (Hidden in UI, visible in PDF capture) */}
+                            <div className="mt-8 pt-4 border-t border-slate-200 flex justify-between items-end opacity-60">
+                               <div className="text-[9px] text-slate-500">
+                                 <b>RecapMind Clinical Decision Support System</b><br />
+                                 Generated: {new Date().toLocaleString('th-TH')}<br />
+                                 Clinical Integrity: Validated by AI & Practitioner
+                               </div>
+                               <div className="text-[9px] text-slate-400 text-right">
+                                 Developed by <b>Thanvaruj Booranasuksakul</b><br />
+                                 Master of Science Program in Mental Health
+                               </div>
+                            </div>
+                          </div>
+
+                          {/* Action Footer for specific model */}
+                          <div className="flex flex-col gap-4 pt-6 mt-4 border-t border-slate-100 bg-slate-50/50 -mx-6 -mb-6 px-6 pb-6 rounded-b-2xl">
+                             
+                             {/* HITL Review Section */}
+                             <div className="bg-white border border-blue-100 rounded-xl p-4 shadow-sm hitl-section">
+                                <div className="flex items-center gap-2 mb-3">
+                                   <ShieldCheck size={16} className="text-blue-600" />
+                                   <h4 className="text-[12px] font-bold text-slate-800">✅ HITL Checklist — Clinician Review</h4>
+                                </div>
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-2 mb-4">
+                                   {[
+                                     'De-identified: ข้อมูลบุคคลถูกลบเรียบร้อยแล้ว',
+                                     'Formulation: CBT สอดคล้องกับข้อเท็จจริง',
+                                     'Risk: ยืนยันผลการประเมินความเสี่ยงแล้ว',
+                                     'Plan: แผนการรักษามีความชัดเจนตกลงร่วมกัน',
+                                     'Integrity: บันทึกถูกต้องตามหลักวิชาชีพ'
+                                   ].map((item, idx) => (
+                                     <div key={idx} className="flex items-center justify-between group py-1 border-b border-slate-50 last:border-0">
+                                       <button 
+                                          onClick={(e) => { e.stopPropagation(); toggleHitl(m, idx); }}
+                                          className="flex items-start gap-2.5 text-left flex-1"
+                                       >
+                                         <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${hitl[m][idx] ? 'bg-green-600 border-green-600 text-white' : 'bg-white border-slate-300 group-hover:border-blue-400'}`}>
+                                            {hitl[m][idx] && <CheckCircle2 size={10} />}
+                                         </div>
+                                         <span className={`text-[11px] leading-tight ${hitl[m][idx] ? 'text-slate-900 font-medium' : 'text-slate-500'}`}>{item}</span>
+                                       </button>
+                                       
+                                       {idx === 2 && safetyStatus?.risk && !dismissedRisk[m] && !hitl[m][idx] && (
+                                         <span className="flex items-center gap-1 px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-[8px] font-black animate-pulse uppercase ring-1 ring-red-200 ml-2">
+                                           <AlertTriangle size={8} /> 
+                                           Review Required
+                                           <button 
+                                              onClick={(e) => { e.stopPropagation(); setDismissedRisk(prev => ({...prev, [m]: true})); }}
+                                              className="ml-1 hover:bg-red-200 rounded p-0.5"
+                                           >
+                                              <X size={8} />
+                                           </button>
+                                         </span>
+                                       )}
+                                       
+                                       {idx === 2 && safetyStatus?.risk && hitl[m][idx] && (
+                                         <span className="text-[8px] font-bold text-green-600 bg-green-50 px-1.5 py-0.5 rounded border border-green-100 ml-2">
+                                           Verified Risk
+                                         </span>
+                                       )}
+                                     </div>
+                                   ))}
+                                </div>
+
+                                <div className="flex flex-col gap-3">
+                                  <button 
+                                    disabled={!isHitlComplete(m) || signedModels[m]}
+                                    onClick={(e) => { e.stopPropagation(); handleCoSign(m); }}
+                                    className={`w-full py-2 rounded-lg font-bold text-[12px] shadow-sm transition-all flex items-center justify-center gap-2 ${signedModels[m] ? 'bg-green-50 text-green-700 border border-green-200 cursor-default' : isHitlComplete(m) ? 'bg-green-600 hover:bg-green-700 text-white transform hover:-translate-y-0.5' : 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'}`}
+                                  >
+                                    {signedModels[m] ? <><CheckCircle2 size={14} /> Co-Signed & Committed to HIS</> : '✍️ Co-Sign & บันทึกเข้าเวชระเบียนโรงพยาบาล'}
+                                  </button>
+
+                                  {signedModels[m] && (
+                                    <motion.div 
+                                      initial={{ height: 0, opacity: 0 }}
+                                      animate={{ height: 'auto', opacity: 1 }}
+                                      className="p-3 bg-green-50 border border-green-200 rounded-lg text-[10.5px] font-mono leading-relaxed sign-section"
+                                    >
+                                      <div className="flex justify-between items-start text-green-800">
+                                        <div className="flex flex-col">
+                                          <b>[HIS AUDIT TRAIL]</b>
+                                          <span>Status: COMPLETED (HL7 FHIR R4)</span>
+                                          <span>Resource: ClinicalImpression</span>
+                                          <span>TxID: RX-2026-{(Math.random() * 100000).toFixed(0)}</span>
+                                        </div>
+                                        <div className="text-right">
+                                          <span>Practitioner: {user?.displayName || 'Thanvaruj B.'}</span><br />
+                                          <span>Time: {new Date().toLocaleTimeString()}</span>
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </div>
+                             </div>
+
+                             <div className="flex items-center justify-between">
+                                <div className="flex flex-col gap-1.5">
+                                   <div className="flex items-center gap-2">
+                                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${signedModels[m] ? 'bg-green-100 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                                       {signedModels[m] ? 'VERIFIED' : 'DRAFT'}
+                                     </span>
+                                     {m === 'rag' && <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 rounded border border-blue-100">RECOMMENDED</span>}
+                                   </div>
+                                   <div className="flex gap-4 ml-0.5">
+                                     <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                       <input 
+                                         type="checkbox" 
+                                         checked={includeHitlInExport} 
+                                         onChange={e => setIncludeHitlInExport(e.target.checked)}
+                                         className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-0 cursor-pointer"
+                                       />
+                                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">Export Review Checklist</span>
+                                     </label>
+                                     <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                       <input 
+                                         type="checkbox" 
+                                         checked={includeSignInExport} 
+                                         onChange={e => setIncludeSignInExport(e.target.checked)}
+                                         className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-0 cursor-pointer"
+                                       />
+                                       <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">Export Sign-off</span>
+                                     </label>
+                                   </div>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setSelectedModel(m as any); handleCopyNote(m as any); }}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] font-bold hover:border-blue-600 hover:text-blue-600 transition-all bg-white shadow-sm"
+                                    >
+                                      <Copy size={13} /> Copy
+                                    </button>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); handleSaveAsText(m); }}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 border border-[#CBD5E1] rounded-lg text-[11px] font-bold hover:border-blue-600 hover:text-blue-600 transition-all bg-white shadow-sm"
+                                    >
+                                      <Save size={13} /> Save as TXT
+                                    </button>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); setSelectedModel(m as any); handleExportPDF(m as any); }}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1549C7] text-white hover:bg-blue-700 rounded-lg text-[11px] font-bold transition-all shadow-sm"
+                                    >
+                                      <Download size={13} /> Export PDF
+                                    </button>
+                                 </div>
+                             </div>
+                          </div>
                         </div>
-                      )}
-
-                      {/* RAG Context */}
-                      {selectedModel === 'rag' && ragResults.length > 0 && (
-                        <div className="bg-slate-100/80 border border-slate-200 rounded-xl p-3">
-                           <div className="flex items-center gap-2 mb-2">
-                             <Database size={14} className="text-blue-600" />
-                             <h4 className="text-[11px] font-bold uppercase text-slate-500">RAG — Retrieved Context</h4>
-                           </div>
-                           <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                             {ragResults.map((r) => (
-                               <div key={r.id} className="bg-white p-2 rounded border border-slate-200 shadow-xs">
-                                  <div className="text-[10px] font-bold text-blue-600 mb-1">{r.id}</div>
-                                  <div className="text-[11px] font-medium leading-tight line-clamp-2">{r.th}</div>
-                               </div>
-                             ))}
-                           </div>
-                        </div>
-                      )}
-
-                      <div className="space-y-3">
-                        {/* Section 1-5 */}
-                        {[
-                          { id: 1, k: 'mood_check', l: 'Mood Check', sl: 'รายงานอารมณ์เริ่มต้น' },
-                          { id: 2, k: 'bridge', l: 'Bridge from Previous', sl: 'การเชื่อมโยงจากครั้งก่อน' },
-                          { id: 3, k: 'agenda', l: 'Session Agenda', sl: 'วาระเป้าหมายหลัก' },
-                          { id: 4, k: 'homework_review', l: 'Homework Review', sl: 'ตรวจการบ้านเดิม' },
-                          { id: 5, k: 'new_topics', l: 'New Topics / Event', sl: 'เหตุการณ์ตัวกระตุ้นใหม่' },
-                        ].map(f => (
-                          <div key={f.id} className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
-                             <div className="flex items-center gap-3 px-3 py-2 bg-slate-50/50 border-b border-slate-100">
-                               <div className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center grow-0 shrink-0">{f.id}</div>
-                               <div>
-                                 <div className="text-[11.5px] font-bold">{f.l}</div>
-                                 <div className="text-[9.5px] text-slate-400 leading-none">{f.sl}</div>
-                               </div>
-                             </div>
-                             <div className="p-3">
-                               <div className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{(currentNote as any)[f.k] || 'NA'}</div>
-                             </div>
-                          </div>
-                        ))}
-
-                        {/* Section 6 - CBT Diagram */}
-                        <div className="bg-gradient-to-br from-blue-50 to-teal-50 border border-blue-200 rounded-xl overflow-hidden shadow-xs">
-                          <div className="flex items-center justify-between px-3 py-2 bg-white/50 border-b border-blue-100">
-                             <div className="flex items-center gap-3">
-                               <div className="w-5 h-5 rounded-full bg-teal-600 text-white text-[10px] font-bold flex items-center justify-center grow-0 shrink-0">6</div>
-                               <div>
-                                 <div className="text-[11.5px] font-bold text-blue-800">CBT Formulation (5-Part Model)</div>
-                                 <div className="text-[9.5px] text-blue-400 leading-none">การวิเคราะห์พุทธิปัญญาและพฤติกรรม</div>
-                               </div>
-                             </div>
-                          </div>
-                          
-                          <div className="p-4 space-y-3">
-                            <div className="flex justify-center">
-                              <div className="max-w-sm w-full bg-white rounded-lg p-3 border border-amber-200 text-center shadow-sm">
-                                <div className="text-[9px] font-bold text-amber-600 uppercase mb-1">Situation</div>
-                                <div className="text-[12px] leading-snug">{currentNote.cbt_model.situation}</div>
-                              </div>
-                            </div>
-                            
-                            <div className="flex justify-center"><ArrowRight size={16} className="rotate-90 text-slate-300" /></div>
-                            
-                            <div className="flex justify-center items-center gap-4">
-                              <div className="flex-1 bg-white rounded-lg p-3 border border-red-200 text-center shadow-sm">
-                                <div className="text-[9px] font-bold text-red-600 uppercase mb-1">Mood</div>
-                                <div className="text-[12px] leading-snug">{currentNote.cbt_model.mood}</div>
-                              </div>
-                              <ArrowRight size={16} className="text-slate-300 shrink-0" />
-                              <div className="flex-1 bg-white rounded-lg p-3 border border-blue-200 text-center shadow-sm">
-                                <div className="text-[9px] font-bold text-blue-600 uppercase mb-1">Thought</div>
-                                <div className="text-[12px] leading-snug">{currentNote.cbt_model.thoughts}</div>
-                              </div>
-                            </div>
-                            
-                            <div className="flex justify-center"><ArrowRight size={16} className="rotate-90 text-slate-300" /></div>
-                            
-                            <div className="flex justify-center items-center gap-4">
-                              <div className="flex-1 bg-white rounded-lg p-3 border border-teal-200 text-center shadow-sm">
-                                <div className="text-[9px] font-bold text-teal-600 uppercase mb-1">Behavior</div>
-                                <div className="text-[12px] leading-snug">{currentNote.cbt_model.behavior}</div>
-                              </div>
-                              <ArrowRight size={16} className="text-slate-300 shrink-0" />
-                              <div className="flex-1 bg-white rounded-lg p-3 border border-green-200 text-center shadow-sm">
-                                <div className="text-[9px] font-bold text-green-600 uppercase mb-1">Physical Reaction</div>
-                                <div className="text-[12px] leading-snug">{currentNote.cbt_model.physical}</div>
-                              </div>
-                            </div>
-
-                            <div className="mt-4 p-2.5 bg-violet-50 border border-dashed border-violet-200 rounded-lg text-center text-[10px] text-violet-700">
-                                🔄 <b>Maintaining Cycle</b> — องค์ประกอบทั้ง 5 ส่วนเชื่อมโยงและรักษาสภาวะทางจิตใจ
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Section 7-10 */}
-                        {[
-                          { id: 7, k: 'intervention', l: 'Intervention / Techniques', sl: 'กระบวนการบำบัดที่ใช้' },
-                          { id: 8, k: 'plan_homework', l: 'Action Plan / Homework', sl: 'แผนปฏิบัติและการบ้าน' },
-                          { id: 9, k: 'summary', l: 'Session Summary', sl: 'สรุปผลลัพธ์และ Insight' },
-                          { id: 10, k: 'feedback_appointment', l: 'Risk & Feedback', sl: 'ประเมินความเสี่ยงและนัดหมาย' },
-                        ].map(f => (
-                          <div key={f.id} className="bg-white border border-slate-200 rounded-lg shadow-xs overflow-hidden">
-                             <div className="flex items-center gap-3 px-3 py-2 bg-slate-50/50 border-b border-slate-100">
-                               <div className={`w-5 h-5 rounded-full ${f.id === 10 ? 'bg-red-600' : 'bg-teal-600'} text-white text-[10px] font-bold flex items-center justify-center grow-0 shrink-0`}>{f.id}</div>
-                               <div>
-                                 <div className="text-[11.5px] font-bold">{f.l}</div>
-                                 <div className="text-[9.5px] text-slate-400 leading-none">{f.sl}</div>
-                               </div>
-                               {f.id === 10 && safetyStatus?.risk && <span className="ml-auto text-[10px] font-bold bg-red-100 text-red-700 px-2 rounded-full border border-red-200">🚩 ALERT</span>}
-                             </div>
-                             <div className="p-3">
-                               <div className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{(currentNote as any)[f.k] || 'NA'}</div>
-                             </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Co-Sign Section */}
-                      <div className="bg-white border border-blue-200 rounded-xl shadow-lg p-5">
-                         <div className="flex items-center gap-2 mb-4">
-                           <CheckCircle2 size={18} className="text-blue-600" />
-                           <h3 className="text-[13px] font-bold">✅ HITL Checklist — Clinician Review</h3>
-                         </div>
-                         
-                         <div className="space-y-2 mb-5">
-                           {[
-                             'ข้อมูลส่วนบุคคลถูกลบ (De-identified) เรียบร้อยแล้ว',
-                             'CBT Formulation (6) ครบถ้วนและสะท้อนความจริง',
-                             'ประเมินความเสี่ยง (10) ได้รับการยืนยันโดยผู้บำบัด',
-                             'Action Plan (8) มีความชัดเจนและตกลงร่วมกัน',
-                             'บันทึกมีความถูกต้องตามหลักการวิชาชีพ'
-                           ].map((item, idx) => (
-                             <button 
-                                key={idx} 
-                                onClick={() => toggleHitl(idx)}
-                                className="flex items-center gap-3 w-full text-left p-2 rounded-lg hover:bg-slate-50 transition-colors group"
-                             >
-                               <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${hitl[idx] ? 'bg-green-600 border-green-600 text-white' : 'border-slate-200 bg-white group-hover:border-blue-400'}`}>
-                                 {hitl[idx] && <CheckCircle2 size={12} />}
-                               </div>
-                               <span className={`text-[12.5px] ${hitl[idx] ? 'text-slate-900 font-medium' : 'text-slate-500'}`}>{item}</span>
-                             </button>
-                           ))}
-                         </div>
-
-                         <div className="flex flex-col gap-3">
-                            <button 
-                              disabled={!isHitlComplete || isCoSigned}
-                              onClick={handleCoSign}
-                              className={`w-full py-2.5 rounded-lg font-bold shadow-md transition-all flex items-center justify-center gap-2 ${isCoSigned ? 'bg-green-100 text-green-700 border border-green-200' : isHitlComplete ? 'bg-green-600 hover:bg-green-700 text-white scale-[1.01]' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
-                            >
-                              {isCoSigned ? <><CheckCircle2 size={18} /> Co-Signed Successfully</> : '✍️ Co-Sign & บันทึกเข้า HIS'}
-                            </button>
-                            
-                            {isCoSigned && (
-                               <motion.div 
-                                 initial={{ height: 0, opacity: 0 }}
-                                 animate={{ height: 'auto', opacity: 1 }}
-                                 className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-[11.5px]"
-                               >
-                                 <b>Transaction ID:</b> RX-992384-H<br />
-                                 <b>Status:</b> บันทึกเข้าระบบ HL7 FHIR R4 สำเร็จ ณ 12:45 น.<br />
-                                 <b>Practitioner:</b> Thanvaruj Booranasuksakul
-                               </motion.div>
-                            )}
-
-                            <div className="flex gap-2">
-                               <button 
-                                 disabled={isLoading || isSaving}
-                                 onClick={handleExportPDF}
-                                 className="flex-1 border border-slate-200 py-2 rounded-lg text-[12px] font-bold flex items-center justify-center gap-2 hover:border-blue-600 hover:text-blue-600 transition-all disabled:opacity-50"
-                               >
-                                 <Download size={14} /> {isSaving ? 'Saving...' : 'Export PDF'}
-                               </button>
-                               <button 
-                                 disabled={isLoading || isSaving}
-                                 onClick={handleCopyNote}
-                                 className="flex-1 border border-slate-200 py-2 rounded-lg text-[12px] font-bold flex items-center justify-center gap-2 hover:border-blue-600 hover:text-blue-600 transition-all disabled:opacity-50"
-                               >
-                                 <Copy size={14} /> {isSaving ? 'Saving...' : 'Copy Note'}
-                               </button>
-                            </div>
-                            {!user && (
-                              <p className="text-[10px] text-slate-400 text-center mt-2">
-                                💡 Sign In เพื่อช่วยพัฒนาระบบ AI ด้วยข้อมูลเคสนี้ (RAG & Feedback Loop)
-                              </p>
-                            )}
-                         </div>
-                      </div>
-                    </div>
+                      );
+                    })
                   )}
                 </div>
               </main>

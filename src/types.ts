@@ -11,7 +11,7 @@ export enum InputMode {
   CASE = 'case',
 }
 
-export interface GoldenCase {
+export interface CaseExample {
   id: string;
   th: string;
   risk: boolean;

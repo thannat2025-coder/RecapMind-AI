@@ -2,5 +2,5 @@
   "name": "RecapMind v6 — AI Clinical Scribe",
   "description": "An expert AI assistant for psychiatrists and therapists to summarize CBT transcripts into structured clinical notes with RAG and safety guardrails.",
   "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["AI-powered clinical documentation", "CBT 5-Part formulation", "De-identification"]
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
