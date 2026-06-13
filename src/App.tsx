@@ -29,7 +29,9 @@ import {
   Save,
   LogOut,
   LogIn,
-  X
+  X,
+  Keyboard,
+  FolderOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
@@ -884,7 +886,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
               className="flex h-full flex-col md:flex-row overflow-hidden"
             >
               {/* Left Panel - Input */}
-              <aside className="w-full md:w-[370px] bg-white border-r border-[#E3E8EF] flex flex-col shrink-0 overflow-hidden">
+              <aside className="w-full md:w-[440px] bg-white border-r border-[#E3E8EF] flex flex-col shrink-0 overflow-hidden">
                 <div className="p-4 py-3 border-b border-[#E3E8EF] shrink-0">
                   <h2 className="text-[13px] font-bold">📝 Input — Transcript</h2>
                   <p className="text-[11px] text-[#64748B]">อัดเสียง / Upload / ค้นหา Case ตัวอย่าง</p>
@@ -894,8 +896,8 @@ Generated: ${new Date().toLocaleString('th-TH')}
                   {/* Session Type selection */}
                   <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
                     <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center gap-2">
-                      <Activity size={14} className="text-[#1549C7]" />
-                      <h3 className="text-[12px] font-bold">เลือกประเภทเวชระเบียน</h3>
+                       <Activity size={14} className="text-[#1549C7]" />
+                       <h3 className="text-[12px] font-bold">เลือกประเภทเวชระเบียน</h3>
                     </div>
                     <div className="p-2 space-y-1.5 bg-slate-50/50">
                       <button
@@ -935,153 +937,190 @@ Generated: ${new Date().toLocaleString('th-TH')}
                     </div>
                   </div>
 
-                  {/* Mode Selector */}
-                  <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
-                    <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center gap-2">
-                      <Zap size={14} className="text-[#1549C7]" />
-                      <h3 className="text-[12px] font-bold">วิธีป้อน Transcript</h3>
-                    </div>
-                    <div className="p-3">
-                      <div className="flex gap-1 flex-wrap mb-3">
-                        {(Object.values(InputMode) as InputMode[]).map(mode => (
-                          <button
-                            key={mode}
-                            onClick={() => setInputMode(mode)}
-                            className={`px-2.5 py-1 rounded-full border-[1.5px] text-[11.5px] font-semibold transition-all ${inputMode === mode ? 'bg-blue-50 border-[#1549C7] text-[#1549C7]' : 'border-[#CBD5E1] text-[#64748B] hover:border-[#1549C7]'}`}
-                          >
-                            {mode === InputMode.RECORD && '🎙️ อัดเสียง'}
-                            {mode === InputMode.UPLOAD && '📁 Upload'}
-                            {mode === InputMode.TYPE && '✏️ พิมพ์'}
-                            {mode === InputMode.CASE && '📂 เคสตัวอย่าง'}
-                          </button>
-                        ))}
-                      </div>
-
-                      {inputMode === InputMode.RECORD && (
-                        <div className="text-center p-3 bg-[#F9FAFB] border border-[#E3E8EF] rounded-md relative overflow-hidden">
-                          {recording && (
-                            <motion.div 
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 0.05 }}
-                              className="absolute inset-0 bg-red-600 pointer-events-none"
-                            />
-                          )}
-                          <div className="text-[24px] font-extrabold font-mono tracking-wider relative z-10">{formatTime(recTime)}</div>
-                          <p className={`text-[11px] font-medium my-1 relative z-10 ${recording ? 'text-red-600' : 'text-slate-500'}`}>
-                            {recording ? '● กำลังอัดเสียง (Live Transcript)...' : 'พร้อมอัดเสียง • Real-time STT'}
-                          </p>
-                          <button 
-                            onClick={recording ? stopRecording : startRecording}
-                            className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-lg transition-transform hover:scale-105 active:scale-95 shadow-md mx-auto relative z-10 ${recording ? 'bg-red-800' : 'bg-red-600'}`}
-                          >
-                            {recording ? (
-                              <motion.div 
-                                animate={{ scale: [1, 1.2, 1] }}
-                                transition={{ repeat: Infinity, duration: 1.5 }}
-                                className="w-4 h-4 bg-white rounded-sm" 
-                              />
-                            ) : <Mic size={20} />}
-                          </button>
-                          
-                          <div className="mt-2.5 p-2 bg-blue-50/50 border border-blue-100 rounded text-[10px] text-[#1E3A8A] text-left leading-relaxed flex gap-1.5 items-start">
-                            <Info size={12} className="text-blue-600 shrink-0 mt-0.5" />
-                            <span>
-                              <b>ระเบียบถอดคำความยาวไม่จำกัด:</b> ทำงานบน Web Speech API ที่เป็นโมเดลฟรีจากเว็บบราวเซอร์มาตรฐาน ไม่จำกัด Token ได้คำพูดครบถ้วน ปลอดภัยแบบ On-Device 100%
-                            </span>
-                          </div>
-                        </div>
-                      )}
-
-                      {inputMode === InputMode.UPLOAD && (
-                        <div 
-                          onClick={() => !isLoading && fileInputRef.current?.click()}
-                          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                          onDrop={(e) => {
-                            if (isLoading) return;
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                              const dt = new DataTransfer();
-                              dt.items.add(e.dataTransfer.files[0]);
-                              if (fileInputRef.current) {
-                                fileInputRef.current.files = dt.files;
-                                const event = { target: fileInputRef.current } as React.ChangeEvent<HTMLInputElement>;
-                                handleFileUpload(event);
-                              }
-                            }
-                          }}
-                          className={`border-2 border-dashed border-[#CBD5E1] rounded-md p-5 text-center cursor-pointer bg-[#F9FAFB] hover:bg-slate-100 transition-all ${isLoading ? 'opacity-90 border-blue-500 bg-blue-50/20 cursor-wait' : ''}`}
-                        >
-                          {isLoading ? (
-                            <div className="flex flex-col items-center justify-center space-y-2 py-4">
-                              <motion.div
-                                animate={{ rotate: 360 }}
-                                transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
-                                className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"
-                              />
-                              <div className="text-[12px] font-bold text-blue-800">กำลังประมวลผลข้อมูลส่งคำถอดความ</div>
-                              <div className="text-[10px] text-slate-600 px-3 leading-relaxed animate-pulse">
-                                {loadingMessage}
-                              </div>
-                            </div>
-                          ) : (
-                            <>
-                              <input 
-                                type="file" 
-                                ref={fileInputRef} 
-                                onChange={handleFileUpload} 
-                                className="hidden" 
-                                accept=".txt,.docx,.pdf,.mp3,.wav,.m4a,.mp4"
-                              />
-                              <Upload size={24} className="mx-auto mb-1 text-[#64748B]" />
-                              <div className="text-[12px] font-semibold">คลิกเพื่อเลือกไฟล์ หรือลากวางที่นี่</div>
-                              <div className="text-[10px] text-slate-400">.docx .pdf .mp3 .mp4 .txt</div>
-                            </>
-                          )}
-                        </div>
-                      )}
-
-                      {inputMode === InputMode.CASE && (
-                        <div className="space-y-2">
-                          <label className="text-[11.5px] font-semibold text-[#4A5568]">เลือกเคสตัวอย่าง</label>
-                          <select 
-                            onChange={(e) => loadCase(e.target.value)}
-                            className="w-full text-[13px] border border-[#CBD5E1] rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-[#1549C7]"
-                          >
-                            <option value="">— เลือกเคส —</option>
-                            {CASE_EXAMPLES.map(c => <option key={c.id} value={c.id}>{c.id}: {c.th}</option>)}
-                          </select>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Transcript Area */}
-                  <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
+                  {/* Transcript Input Section (Vertical Rail + Workspace Row) */}
+                  <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden flex flex-col">
                     <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <FileText size={14} className="text-[#1549C7]" />
-                        <h3 className="text-[12px] font-bold">Transcript</h3>
+                      <div className="flex items-center gap-1.5">
+                        <Zap size={13} className="text-[#1549C7]" />
+                        <h3 className="text-[12px] font-bold">นำเข้า Transcript</h3>
                       </div>
                       <div className="flex gap-1">
-                        <button onClick={handleDeID} className="px-2 py-0.5 text-[10.5px] font-bold border border-slate-300 rounded hover:border-blue-600 hover:text-blue-600">🔒 De-ID</button>
-                        <button onClick={handleClear} className="px-2 py-0.5 text-[10.5px] font-bold border border-slate-300 rounded hover:border-red-600 hover:text-red-600"><Trash2 size={10} /></button>
+                        <button onClick={handleDeID} className="px-2 py-0.5 text-[10px] font-bold border border-slate-300 rounded bg-white hover:border-indigo-600 hover:text-indigo-600 transition-colors">🔒 De-ID</button>
+                        <button onClick={handleClear} className="px-2 py-0.5 text-[10px] font-bold border border-slate-300 rounded bg-white hover:border-red-600 hover:text-red-600 transition-colors"><Trash2 size={10} /></button>
                       </div>
                     </div>
-                    <div className="p-3">
-                      {safetyStatus?.risk && (
-                        <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded flex gap-2 text-[11.5px] text-red-700">
-                          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                          <div><b>SI/SH Detected:</b> {safetyStatus.kws.slice(0,3).join(' • ')}</div>
+
+                    <div className="flex items-stretch bg-white min-h-[340px]">
+                      {/* Left vertical Icon Rail */}
+                      <div className="w-[68px] bg-slate-50/80 border-r border-[#E3E8EF] flex flex-col items-center py-4 gap-3.5 shrink-0">
+                        {/* Record Button */}
+                        <button
+                          onClick={() => setInputMode(InputMode.RECORD)}
+                          className={`w-[48px] h-[48px] rounded-xl flex flex-col items-center justify-center transition-all ${inputMode === InputMode.RECORD ? 'bg-blue-600 text-white shadow-sm font-bold' : 'text-slate-500 hover:bg-slate-150 hover:text-slate-800'}`}
+                          title="อัดเสียง Real-time STT"
+                        >
+                          <Mic size={16} />
+                          <span className="text-[8.5px] font-bold mt-1">อัดเสียง</span>
+                        </button>
+
+                        {/* Upload Button */}
+                        <button
+                          onClick={() => setInputMode(InputMode.UPLOAD)}
+                          className={`w-[48px] h-[48px] rounded-xl flex flex-col items-center justify-center transition-all ${inputMode === InputMode.UPLOAD ? 'bg-blue-600 text-white shadow-sm font-bold' : 'text-slate-500 hover:bg-slate-150 hover:text-slate-800'}`}
+                          title="อัปโหลดไฟล์ไฟล์"
+                        >
+                          <Upload size={16} />
+                          <span className="text-[8.5px] font-bold mt-1">Upload</span>
+                        </button>
+
+                        {/* Type Button */}
+                        <button
+                          onClick={() => setInputMode(InputMode.TYPE)}
+                          className={`w-[48px] h-[48px] rounded-xl flex flex-col items-center justify-center transition-all ${inputMode === InputMode.TYPE ? 'bg-blue-600 text-white shadow-sm font-bold' : 'text-slate-500 hover:bg-slate-150 hover:text-slate-800'}`}
+                          title="พิมพ์เองด้วยมือ"
+                        >
+                          <Keyboard size={16} />
+                          <span className="text-[8.5px] font-bold mt-1">พิมพ์เอง</span>
+                        </button>
+
+                        {/* Case Template Button */}
+                        <button
+                          onClick={() => setInputMode(InputMode.CASE)}
+                          className={`w-[48px] h-[48px] rounded-xl flex flex-col items-center justify-center transition-all ${inputMode === InputMode.CASE ? 'bg-blue-600 text-white shadow-sm font-bold' : 'text-slate-500 hover:bg-slate-150 hover:text-slate-800'}`}
+                          title="เคสสัมภาษณ์ตัวอย่าง"
+                        >
+                          <FolderOpen size={16} />
+                          <span className="text-[8.5px] font-bold mt-1">ตัวอย่าง</span>
+                        </button>
+                      </div>
+
+                      {/* Right Workspace with Controls and Textarea */}
+                      <div className="flex-1 p-3 flex flex-col gap-2.5 min-w-0 bg-white">
+                        {/* Conditional Active Mode panel at top of workspace */}
+                        {inputMode === InputMode.RECORD && (
+                          <div className="text-center p-2 py-3 bg-[#F9FAFB] border border-[#E3E8EF] rounded-md relative overflow-hidden">
+                            {recording && (
+                              <motion.div 
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 0.05 }}
+                                className="absolute inset-0 bg-red-600 pointer-events-none"
+                              />
+                            )}
+                            <div className="text-[18px] font-extrabold font-mono tracking-wider relative z-10">{formatTime(recTime)}</div>
+                            <p className={`text-[9.5px] font-medium my-0.5 relative z-10 ${recording ? 'text-red-600' : 'text-slate-500'}`}>
+                              {recording ? '● กำลังอัดเสียง...' : 'พร้อมอัดเสียง • Real-time STT'}
+                            </p>
+                            <button 
+                              onClick={recording ? stopRecording : startRecording}
+                              className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-base transition-transform hover:scale-105 active:scale-95 shadow-md mx-auto relative z-10 ${recording ? 'bg-red-800' : 'bg-red-600'}`}
+                            >
+                              {recording ? (
+                                <motion.div 
+                                  animate={{ scale: [1, 1.2, 1] }}
+                                  transition={{ repeat: Infinity, duration: 1.5 }}
+                                  className="w-3 h-3 bg-white rounded-sm" 
+                                />
+                              ) : <Mic size={14} />}
+                            </button>
+                            
+                            <div className="mt-1.5 p-1 bg-blue-50/50 border border-blue-100 rounded text-[8.5px] text-[#1E3A8A] text-left leading-normal flex gap-1 items-start">
+                              <Info size={10} className="text-blue-600 shrink-0 mt-0.5" />
+                              <span>
+                                <b>On-Device STT:</b> ถอดเสียงทันทีแบบปลอดภัย ฟรี ไม่มีข้อจำกัดด้านความยาว
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {inputMode === InputMode.UPLOAD && (
+                          <div 
+                            onClick={() => !isLoading && fileInputRef.current?.click()}
+                            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                            onDrop={(e) => {
+                              if (isLoading) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                                const dt = new DataTransfer();
+                                dt.items.add(e.dataTransfer.files[0]);
+                                if (fileInputRef.current) {
+                                  fileInputRef.current.files = dt.files;
+                                  const event = { target: fileInputRef.current } as React.ChangeEvent<HTMLInputElement>;
+                                  handleFileUpload(event);
+                                }
+                              }
+                            }}
+                            className={`border border-dashed border-[#CBD5E1] rounded-md p-2.5 text-center cursor-pointer bg-[#F9FAFB] hover:bg-slate-100 transition-all ${isLoading ? 'opacity-90 border-blue-500 bg-blue-50/20 cursor-wait' : ''}`}
+                          >
+                            {isLoading ? (
+                              <div className="flex flex-col items-center justify-center space-y-1 py-1.5">
+                                <motion.div
+                                  animate={{ rotate: 360 }}
+                                  transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                                  className="w-5 h-5 border-2.5 border-blue-600 border-t-transparent rounded-full"
+                                />
+                                <div className="text-[10px] font-bold text-blue-800">กำลังถอดความ...</div>
+                                <div className="text-[8.5px] text-slate-600 px-1 leading-relaxed animate-pulse">
+                                  {loadingMessage}
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <input 
+                                  type="file" 
+                                  ref={fileInputRef} 
+                                  onChange={handleFileUpload} 
+                                  className="hidden" 
+                                  accept=".txt,.docx,.pdf,.mp3,.wav,.m4a,.mp4"
+                                />
+                                <Upload size={16} className="mx-auto mb-0.5 text-[#64748B]" />
+                                <div className="text-[10px] font-semibold">คลิกเพื่อเลือกไฟล์ หรือลากวาง</div>
+                                <div className="text-[8px] text-slate-450">รองรับ .docx, .pdf, .mp3, .mp4, .txt</div>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {inputMode === InputMode.CASE && (
+                          <div className="p-2 bg-[#F9FAFB] border border-[#E3E8EF] rounded-md">
+                            <label className="text-[9.5px] font-semibold text-[#4A5568] block mb-1">เลือกเคสตัวอย่าง</label>
+                            <select 
+                              onChange={(e) => loadCase(e.target.value)}
+                              className="w-full text-[11px] border border-[#CBD5E1] rounded px-1.5 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-100 focus:border-[#1549C7]"
+                            >
+                              <option value="">— เลือกเคสตัวอย่างที่ต้องการ —</option>
+                              {CASE_EXAMPLES.map(c => <option key={c.id} value={c.id}>{c.id}: {c.th}</option>)}
+                            </select>
+                          </div>
+                        )}
+
+                        {inputMode === InputMode.TYPE && (
+                          <div className="text-[9px] font-medium text-[#2F80ED] bg-blue-50/50 p-2 rounded border border-blue-100/50 flex gap-1.5 items-center">
+                            <Info size={11} className="text-[#2F80ED]" />
+                            <span>เขียน หรือคัดลอกบทสนทนาการรักษามาวางด้านล่างได้ทันที</span>
+                          </div>
+                        )}
+
+                        {/* Transcript Field */}
+                        <div className="flex-1 flex flex-col min-h-[170px]">
+                          {safetyStatus?.risk && (
+                            <div className="mb-1.5 p-1.5 bg-red-50 border border-red-200 rounded flex gap-1.5 text-[9.5px] text-red-700">
+                              <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                              <div><b>พบความเสี่ยงเพิ่มเติม:</b> {safetyStatus.kws.slice(0,3).join(' • ')}</div>
+                            </div>
+                          )}
+                          <textarea 
+                            value={transcript + (interimTranscript ? ' ' + interimTranscript : '')}
+                            onChange={(e) => setTranscript(e.target.value)}
+                            placeholder="พิมพ์ หรือผลลัพธ์การอัดเสียง/อัพโหลดไฟล์จะมาปรากฏอยู่ในช่องนี้..."
+                            className={`w-full flex-1 text-[12px] border rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-100 resize-none transition-colors min-h-[150px] ${recording ? 'bg-slate-50 border-red-200 ring-2 ring-red-50' : 'bg-white border-[#CBD5E1] focus:border-[#1549C7]'}`}
+                          />
+                          <div className="text-[9px] text-slate-400 mt-1 flex justify-between items-center bg-white px-0.5">
+                            <span>{transcript.length.toLocaleString()} ตัวอักษร</span>
+                            {inputMode === InputMode.TYPE && <span className="text-[#1549C7] font-semibold">โหมดพิมพ์เอง</span>}
+                          </div>
                         </div>
-                      )}
-                      <textarea 
-                        value={transcript + (interimTranscript ? ' ' + interimTranscript : '')}
-                        onChange={(e) => setTranscript(e.target.value)}
-                        placeholder="วาง transcript ที่นี่..."
-                        className={`w-full h-48 text-[12.5px] border rounded-md p-2 focus:outline-none focus:ring-2 focus:ring-blue-100 resize-none transition-colors ${recording ? 'bg-slate-50 border-red-200 ring-2 ring-red-50' : 'bg-white border-[#CBD5E1] focus:border-[#1549C7]'}`}
-                      />
-                      <div className="text-[10px] text-slate-400 mt-1">{transcript.length.toLocaleString()} ตัวอักษร</div>
+                      </div>
                     </div>
                   </div>
 
