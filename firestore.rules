@@ -19,21 +19,32 @@ service cloud.firestore {
     }
 
     function isValidClinicalNote(note) {
-      return note.mood_check is string && note.mood_check.size() <= 2000 &&
-             note.bridge is string && note.bridge.size() <= 2000 &&
-             note.agenda is string && note.agenda.size() <= 2000 &&
-             note.homework_review is string && note.homework_review.size() <= 2000 &&
-             note.new_topics is string && note.new_topics.size() <= 2000 &&
-             note.cbt_model is map &&
-             note.cbt_model.situation is string &&
-             note.cbt_model.mood is string &&
-             note.cbt_model.thoughts is string &&
-             note.cbt_model.behavior is string &&
-             note.cbt_model.physical is string &&
-             note.intervention is string && note.intervention.size() <= 3000 &&
-             note.plan_homework is string && note.plan_homework.size() <= 2000 &&
-             note.summary is string && note.summary.size() <= 5000 &&
-             note.feedback_appointment is string && note.feedback_appointment.size() <= 2000;
+      return (
+        // CBT Note format
+        (note.keys().hasAll(['mood_check', 'bridge', 'agenda', 'homework_review', 'new_topics', 'cbt_model', 'intervention', 'plan_homework', 'summary', 'feedback_appointment']) &&
+         note.mood_check is string && note.mood_check.size() <= 2000 &&
+         note.bridge is string && note.bridge.size() <= 2000 &&
+         note.agenda is string && note.agenda.size() <= 2000 &&
+         note.homework_review is string && note.homework_review.size() <= 2000 &&
+         note.new_topics is string && note.new_topics.size() <= 2000 &&
+         note.cbt_model is map &&
+         note.cbt_model.situation is string &&
+         note.cbt_model.mood is string &&
+         note.cbt_model.thoughts is string &&
+         note.cbt_model.behavior is string &&
+         note.cbt_model.physical is string &&
+         note.intervention is string && note.intervention.size() <= 3000 &&
+         note.plan_homework is string && note.plan_homework.size() <= 2000 &&
+         note.summary is string && note.summary.size() <= 5000 &&
+         note.feedback_appointment is string && note.feedback_appointment.size() <= 2000)
+        ||
+        // Psychiatric SOAP format
+        (note.keys().hasAll(['history', 'mental_status', 'diagnosis', 'treatment_plan']) &&
+         note.history is string && note.history.size() <= 5000 &&
+         note.mental_status is string && note.mental_status.size() <= 5000 &&
+         note.diagnosis is string && note.diagnosis.size() <= 3000 &&
+         note.treatment_plan is string && note.treatment_plan.size() <= 3000)
+      );
     }
 
     function isValidTrainingData(data) {

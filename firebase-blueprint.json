@@ -2,7 +2,7 @@
   "entities": {
     "ClinicalNote": {
       "title": "Clinical Note",
-      "description": "Structured CBT clinical note",
+      "description": "Structured CBT or Psychiatric SOAP clinical note",
       "type": "object",
       "properties": {
         "mood_check": { "type": "string" },
@@ -23,9 +23,12 @@
         "intervention": { "type": "string" },
         "plan_homework": { "type": "string" },
         "summary": { "type": "string" },
-        "feedback_appointment": { "type": "string" }
-      },
-      "required": ["mood_check", "bridge", "agenda", "homework_review", "new_topics", "cbt_model", "intervention", "plan_homework", "summary", "feedback_appointment"]
+        "feedback_appointment": { "type": "string" },
+        "history": { "type": "string" },
+        "mental_status": { "type": "string" },
+        "diagnosis": { "type": "string" },
+        "treatment_plan": { "type": "string" }
+      }
     },
     "TrainingData": {
       "title": "Training Data",

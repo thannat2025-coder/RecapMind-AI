@@ -12,7 +12,14 @@ const PORT = 3000;
 app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ limit: '200mb', extended: true }));
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || "",
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
 
 // API Route for Audio/Video File Transcription to Thai Text
 app.post("/api/transcribe", async (req, res) => {
@@ -34,15 +41,19 @@ app.post("/api/transcribe", async (req, res) => {
     console.log(`[API /api/transcribe] Calling Gemini-3.5-flash for speech transcription...`);
     const response = await ai.models.generateContent({
       model: "gemini-3.5-flash",
-      contents: [
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: audioData
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: audioData
+            }
+          },
+          {
+            text: "กรุณาถอดคำพูดจากการอัดเสียงภาษาไทยนี้อย่างละเอียดและครบถ้วนที่สุด โดยเขียนออกมาเป็นบทสนทนา (Thai Transcription) ให้สมบูรณ์ที่สุด ห้ามละและห้ามสรุปความเด็ดขาด หากมีการหารือหรือประเมินในบทสนทนาให้ระบุทั้งหมดให้ตรงตามจริง และไม่ต้องพิมพ์ปูบทนำหรือคำลงท้ายใดๆ"
           }
-        },
-        "กรุณาถอดคำพูดจากการอัดเสียงภาษาไทยนี้อย่างละเอียดและครบถ้วนที่สุด โดยเขียนออกมาเป็นบทสนทนา (Thai Transcription) ให้สมบูรณ์ที่สุด ห้ามละและห้ามสรุปความเด็ดขาด หากมีการหารือหรือประเมินในบทสนทนาให้ระบุทั้งหมดให้ตรงตามจริง และไม่ต้องพิมพ์ปูบทนำหรือคำลงท้ายใดๆ"
-      ]
+        ]
+      }
     });
 
     console.log(`[API /api/transcribe] Transcription success. Result length: ${response.text ? response.text.length : 0} chars.`);

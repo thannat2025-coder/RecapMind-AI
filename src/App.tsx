@@ -44,7 +44,7 @@ import { CASE_EXAMPLES } from './constants';
 import { checkSafety, deIdentify, retrieveRagCases } from './utils';
 import { compressAudioFile } from './utils/audioCompressor';
 import { generateClinicalNote } from './lib/gemini';
-import { auth, loginWithGoogle, logout, saveTrainingData } from './lib/firebase';
+import { auth, loginWithGoogle, logout, saveTrainingData, getTrainingData } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
 const EMPTY_NOTE: ClinicalNote = {
@@ -73,6 +73,7 @@ export default function App() {
   const [patientId, setPatientId] = useState('');
   const [sessionNo, setSessionNo] = useState('');
   const [caseTheme, setCaseTheme] = useState('');
+  const [sessionType, setSessionType] = useState<'cbt' | 'psychiatric'>('cbt');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('กำลังประมวลผล...');
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
@@ -106,6 +107,25 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  const [userCases, setUserCases] = useState<any[]>([]);
+
+  const fetchUserCases = async () => {
+    try {
+      const data = await getTrainingData();
+      setUserCases(data);
+    } catch (err) {
+      console.warn("Failed to load user cases", err);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      fetchUserCases();
+    } else {
+      setUserCases([]);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (recording) {
@@ -231,29 +251,56 @@ export default function App() {
         }
         extractedText = fullText;
       } else if (isMedia) {
-        const compressed = await compressAudioFile(file, (msg) => {
+        const { chunks } = await compressAudioFile(file, (msg) => {
           setLoadingMessage(msg);
         });
 
-        setLoadingMessage('กำลังเชื่อมต่อเซิร์ฟเวอร์ และเริ่มขั้นตอนการสืบค้นถอดความจิตเวชภาษาไทยด้วย Gemini-3.5-flash...');
-        const response = await fetch('/api/transcribe', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            audioData: compressed.data,
-            mimeType: compressed.mimeType
-          })
-        });
+        let fullTranscript = '';
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          setLoadingMessage(`กำลังถอดคำพูดจากส่วนเสียงภาษาไทย ชิ้นที่ ${i + 1} จากทั้งหมด ${chunks.length} ชิ้น ด้วยโมเดลวิเคราะห์ความละเอียดสูง...`);
+          
+          const response = await fetch('/api/transcribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              audioData: chunk.data,
+              mimeType: chunk.mimeType
+            })
+          });
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || 'ถอดความล้มเหลวหรือไฟล์สตรีมเสียงขัดข้อง');
+          if (!response.ok) {
+            let errorMessage = `ถอดความสัญญาณเสียงล้มเหลวในส่วนชิ้นที่ ${i + 1}`;
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+              try {
+                const errorData = await response.json();
+                errorMessage = errorData.error || errorMessage;
+                if (errorData.details) {
+                  errorMessage += ` (${errorData.details})`;
+                }
+              } catch (e) {
+                // fallback
+              }
+            } else {
+              const tempText = await response.text();
+              if (response.status === 413 || tempText.includes('too large') || tempText.includes('Payload Too Large')) {
+                errorMessage = 'ขนาดข้อมูลเสียงส่วนนี้ใหญ่เกินพิกัดสุทธิของเซิร์ฟเวอร์';
+              } else {
+                errorMessage = `เซิร์ฟเวอร์ตอบกลับผิดพลาด (${response.status} ${response.statusText})`;
+              }
+            }
+            throw new Error(errorMessage);
+          }
+
+          const data = await response.json();
+          const partText = data.text || '';
+          fullTranscript += (fullTranscript ? '\n' : '') + partText;
         }
 
-        const data = await response.json();
-        extractedText = data.text || '';
+        extractedText = fullTranscript;
       } else {
         alert('ประเภทไฟล์ไม่รองรับ กรุณาใช้ .txt, .docx, .pdf หรือไฟล์เสียง/วีดีโอ (.mp3, .wav, .mp4)');
         setIsLoading(false);
@@ -279,7 +326,7 @@ export default function App() {
   const generateAllNotes = async () => {
     if (!transcript.trim()) return;
     setIsLoading(true);
-    setLoadingMessage('กำลังปรับข้อมูลฐานความรู้ คัดกรองรหัสและเปรียบเทียบคำถอดความจิตเวชจาก 3 โมเดล...');
+    setLoadingMessage('กำลังปรับข้อมูลฐานความรู้ คัดกรองรหัสและเปรียบเทียบคำถอดความจิตเวช...');
     setSignedModels({});
     setHitl({
       baseline: [false, false, false, false, false],
@@ -294,24 +341,46 @@ export default function App() {
     setRagResults(retrieved);
  
     try {
-      // Parallel generation
-      const [baseline, rag, finetuned] = await Promise.allSettled([
-        generateClinicalNote(transcript, 'baseline', undefined, caseTheme),
-        generateClinicalNote(transcript, 'rag', retrieved, caseTheme),
-        generateClinicalNote(transcript, 'finetuned', undefined, caseTheme)
-      ]);
- 
-      const generatedNotes = {
-        baseline: baseline.status === 'fulfilled' ? baseline.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' },
-        rag: rag.status === 'fulfilled' ? rag.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' },
-        finetuned: finetuned.status === 'fulfilled' ? finetuned.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' }
-      };
-
-      setNotes(generatedNotes);
-      // Immediately set drafts to ensure editability
-      setNoteDrafts(JSON.parse(JSON.stringify(generatedNotes)));
-      
-      setSelectedModel('rag');
+      if (sessionType === 'cbt') {
+        // Parallel generation for CBT - only RAG and Finetuned as requested
+        const [rag, finetuned] = await Promise.allSettled([
+          generateClinicalNote(transcript, 'rag', retrieved, caseTheme, 'cbt', userCases),
+          generateClinicalNote(transcript, 'finetuned', undefined, caseTheme, 'cbt', userCases)
+        ]);
+   
+        const generatedNotes = {
+          rag: rag.status === 'fulfilled' ? rag.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' },
+          finetuned: finetuned.status === 'fulfilled' ? finetuned.value : { ...EMPTY_NOTE, mood_check: 'Error: API Failed' }
+        };
+  
+        setNotes(generatedNotes);
+        setNoteDrafts(JSON.parse(JSON.stringify(generatedNotes)));
+        setSelectedModel('rag');
+      } else {
+        // Parallel generation for Psychiatric SOAP (Baseline, RAG, Finetuned)
+        const [baseline, rag, finetuned] = await Promise.allSettled([
+          generateClinicalNote(transcript, 'baseline', undefined, caseTheme, 'psychiatric', userCases),
+          generateClinicalNote(transcript, 'rag', undefined, caseTheme, 'psychiatric', userCases),
+          generateClinicalNote(transcript, 'finetuned', undefined, caseTheme, 'psychiatric', userCases)
+        ]);
+   
+        const emptyPsychNote: ClinicalNote = {
+          history: 'NA',
+          mental_status: 'NA',
+          diagnosis: 'NA',
+          treatment_plan: 'NA'
+        };
+  
+        const generatedNotes = {
+          baseline: baseline.status === 'fulfilled' ? baseline.value : { ...emptyPsychNote, history: 'Error: API Failed' },
+          rag: rag.status === 'fulfilled' ? rag.value : { ...emptyPsychNote, history: 'Error: API Failed' },
+          finetuned: finetuned.status === 'fulfilled' ? finetuned.value : { ...emptyPsychNote, history: 'Error: API Failed' }
+        };
+  
+        setNotes(generatedNotes);
+        setNoteDrafts(JSON.parse(JSON.stringify(generatedNotes)));
+        setSelectedModel('rag');
+      }
     } catch (error) {
       console.error("Analysis failed", error);
     } finally {
@@ -338,9 +407,13 @@ export default function App() {
     const note = noteDrafts[modelId] || notes[modelId];
     if (user && note) {
        try {
+         setIsSaving(true);
          await saveTrainingData(transcript, note, modelId + "-signed", patientId, sessionNo);
+         await fetchUserCases();
        } catch (err) {
          console.warn("Failed to background save co-signed note", err);
+       } finally {
+         setIsSaving(false);
        }
     }
   };
@@ -349,8 +422,10 @@ export default function App() {
     const note = noteDrafts[modelId] || notes[modelId];
     if (!note) return;
     
-    const textToCopy = `
-[CLINICAL NOTE - RECAPMIND]
+    let textToCopy = '';
+    if (sessionType === 'cbt') {
+      textToCopy = `
+[CLINICAL NOTE - RECAPMIND - CBT SESSION]
 Patient ID: ${patientId || 'N/A'}
 Session No: ${sessionNo || 'N/A'}
 Theme: ${caseTheme || 'N/A'}
@@ -363,11 +438,11 @@ Model: ${modelId}
 5. New Topics: ${note.new_topics}
 
 CBT MODEL:
-- Situation: ${note.cbt_model.situation}
-- Mood: ${note.cbt_model.mood}
-- Thought: ${note.cbt_model.thoughts}
-- Behavior: ${note.cbt_model.behavior}
-- Physical: ${note.cbt_model.physical}
+- Situation: ${note.cbt_model?.situation}
+- Mood: ${note.cbt_model?.mood}
+- Thought: ${note.cbt_model?.thoughts}
+- Behavior: ${note.cbt_model?.behavior}
+- Physical: ${note.cbt_model?.physical}
 
 7. Intervention: ${note.intervention}
 8. Plan/Homework: ${note.plan_homework}
@@ -380,6 +455,33 @@ Developed by Thanvaruj Booranasuksakul
 Master of Science Program in Mental Health
 Generated: ${new Date().toLocaleString('th-TH')}
 `.trim();
+    } else {
+      textToCopy = `
+[CLINICAL SOAP NOTE - RECAPMIND - PSYCHIATRIC SESSION]
+Patient ID: ${patientId || 'N/A'}
+Session No: ${sessionNo || 'N/A'}
+Theme: ${caseTheme || 'N/A'}
+Model: ${modelId}
+
+1. History of Discussion & Review (ประวัติเรื่องที่พูดคุยกัน/ทบทวนการรักษา):
+${note.history || 'N/A'}
+
+2. Mental Status Examination (มาตรฐานทางจิตเวชสากล):
+${note.mental_status || 'N/A'}
+
+3. Diagnosis according to DSM-5 & ICD-11 with codes (การวินิจฉัยโรคพร้อมรหัส):
+${note.diagnosis || 'N/A'}
+
+4. Treatment Plan & Appointments (รูปแบบการรักษาและการนัดหมาย):
+${note.treatment_plan || 'N/A'}
+
+--------------------------------------------------
+[RecapMind Clinical Decision Support System]
+Developed by Thanvaruj Booranasuksakul
+Master of Science Program in Mental Health
+Generated: ${new Date().toLocaleString('th-TH')}
+`.trim();
+    }
 
     try {
       await navigator.clipboard.writeText(textToCopy);
@@ -388,6 +490,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
       if (user) {
         setIsSaving(true);
         await saveTrainingData(transcript, note, modelId, patientId, sessionNo);
+        await fetchUserCases();
         setIsSaving(false);
       }
     } catch (err) {
@@ -399,31 +502,47 @@ Generated: ${new Date().toLocaleString('th-TH')}
     const note = noteDrafts[modelId] || notes[modelId];
     if (!note) return;
 
-    let text = `RECAPMIND CLINICAL NOTE DRAFT (${modelId.toUpperCase()})\n`;
-    text += `=========================================\n`;
-    text += `Patient ID: ${patientId || 'N/A'}\n`;
-    text += `Session No: ${sessionNo || 'N/A'}\n`;
-    text += `Case Theme: ${caseTheme || 'N/A'}\n`;
-    text += `Generated Date: ${new Date().toLocaleString()}\n`;
-    text += `=========================================\n\n`;
+    let text = '';
+    if (sessionType === 'cbt') {
+      text = `RECAPMIND CLINICAL NOTE DRAFT (${modelId.toUpperCase()})\n`;
+      text += `=========================================\n`;
+      text += `Patient ID: ${patientId || 'N/A'}\n`;
+      text += `Session No: ${sessionNo || 'N/A'}\n`;
+      text += `Case Theme: ${caseTheme || 'N/A'}\n`;
+      text += `Generated Date: ${new Date().toLocaleString()}\n`;
+      text += `=========================================\n\n`;
 
-    text += `1. MOOD CHECK:\n${note.mood_check || 'N/A'}\n\n`;
-    text += `2. BRIDGE:\n${note.bridge || 'N/A'}\n\n`;
-    text += `3. AGENDA:\n${note.agenda || 'N/A'}\n\n`;
-    text += `4. HOMEWORK REVIEW:\n${note.homework_review || 'N/A'}\n\n`;
-    text += `5. NEW TOPICS:\n${note.new_topics || 'N/A'}\n\n`;
+      text += `1. MOOD CHECK:\n${note.mood_check || 'N/A'}\n\n`;
+      text += `2. BRIDGE:\n${note.bridge || 'N/A'}\n\n`;
+      text += `3. AGENDA:\n${note.agenda || 'N/A'}\n\n`;
+      text += `4. HOMEWORK REVIEW:\n${note.homework_review || 'N/A'}\n\n`;
+      text += `5. NEW TOPICS:\n${note.new_topics || 'N/A'}\n\n`;
 
-    text += `6. CBT FORMULATION:\n`;
-    text += `   - Situation: ${note.cbt_model?.situation || 'N/A'}\n`;
-    text += `   - Mood: ${note.cbt_model?.mood || 'N/A'}\n`;
-    text += `   - Thoughts: ${note.cbt_model?.thoughts || 'N/A'}\n`;
-    text += `   - Behavior: ${note.cbt_model?.behavior || 'N/A'}\n`;
-    text += `   - Physical: ${note.cbt_model?.physical || 'N/A'}\n\n`;
+      text += `6. CBT FORMULATION:\n`;
+      text += `   - Situation: ${note.cbt_model?.situation || 'N/A'}\n`;
+      text += `   - Mood: ${note.cbt_model?.mood || 'N/A'}\n`;
+      text += `   - Thoughts: ${note.cbt_model?.thoughts || 'N/A'}\n`;
+      text += `   - Behavior: ${note.cbt_model?.behavior || 'N/A'}\n`;
+      text += `   - Physical: ${note.cbt_model?.physical || 'N/A'}\n\n`;
 
-    text += `7. INTERVENTION:\n${note.intervention || 'N/A'}\n\n`;
-    text += `8. HOMEWORK:\n${note.plan_homework || 'N/A'}\n\n`;
-    text += `9. SUMMARY:\n${note.summary || 'N/A'}\n\n`;
-    text += `10. RISK & APPOINTMENT:\n${note.feedback_appointment || 'N/A'}\n\n`;
+      text += `7. INTERVENTION:\n${note.intervention || 'N/A'}\n\n`;
+      text += `8. HOMEWORK:\n${note.plan_homework || 'N/A'}\n\n`;
+      text += `9. SUMMARY:\n${note.summary || 'N/A'}\n\n`;
+      text += `10. RISK & APPOINTMENT:\n${note.feedback_appointment || 'N/A'}\n\n`;
+    } else {
+      text = `RECAPMIND CLINICAL SOAP NOTE DRAFT (${modelId.toUpperCase()})\n`;
+      text += `=========================================\n`;
+      text += `Patient ID: ${patientId || 'N/A'}\n`;
+      text += `Session No: ${sessionNo || 'N/A'}\n`;
+      text += `Case Theme: ${caseTheme || 'N/A'}\n`;
+      text += `Generated Date: ${new Date().toLocaleString()}\n`;
+      text += `=========================================\n\n`;
+
+      text += `1. SUBJECTIVE/OBJECTIVE HISTORY (ประวัติเรื่องที่พูดคุยกัน/ทบทวนการรักษา):\n${note.history || 'N/A'}\n\n`;
+      text += `2. MENTAL STATUS EXAMINATION (มาตรฐานทางจิตเวชสากล):\n${note.mental_status || 'N/A'}\n\n`;
+      text += `3. CLINICAL DIAGNOSES DSM-5 & ICD-11 WITH CODES:\n${note.diagnosis || 'N/A'}\n\n`;
+      text += `4. TREATMENT PLAN & APPOINTMENTS (รูปแบบการรักษาและการนัดหมาย):\n${note.treatment_plan || 'N/A'}\n\n`;
+    }
 
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -553,6 +672,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
       if (user) {
         setIsSaving(true);
         await saveTrainingData(transcript, note, modelId, patientId, sessionNo);
+        await fetchUserCases();
         setIsSaving(false);
       }
       
@@ -616,7 +736,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
     });
   };
 
-  const saveAllChanges = (modelId: string) => {
+  const saveAllChanges = async (modelId: string) => {
     const draft = noteDrafts[modelId];
     if (!draft) return;
     
@@ -624,6 +744,18 @@ Generated: ${new Date().toLocaleString('th-TH')}
       ...prev,
       [modelId]: JSON.parse(JSON.stringify(draft))
     }));
+
+    if (user) {
+      try {
+        setIsSaving(true);
+        await saveTrainingData(transcript, draft, modelId + "-edited", patientId, sessionNo);
+        await fetchUserCases();
+      } catch (err) {
+        console.warn("Failed to background save edited note", err);
+      } finally {
+        setIsSaving(false);
+      }
+    }
     
     alert(`บันทึกการแก้ไขเวชระเบียน (${modelId}) เรียบร้อยแล้ว`);
   };
@@ -769,6 +901,49 @@ Generated: ${new Date().toLocaleString('th-TH')}
                 </div>
                 
                 <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+                  {/* Session Type selection */}
+                  <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
+                    <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center gap-2">
+                      <Activity size={14} className="text-[#1549C7]" />
+                      <h3 className="text-[12px] font-bold">เลือกประเภทเวชระเบียน</h3>
+                    </div>
+                    <div className="p-2 space-y-1.5 bg-slate-50/50">
+                      <button
+                        onClick={() => {
+                          setSessionType('cbt');
+                          setNotes({});
+                          setNoteDrafts({});
+                        }}
+                        className={`w-full text-left p-2 rounded-lg border transition-all flex items-start gap-2 ${sessionType === 'cbt' ? 'border-[#1549C7] bg-blue-50/55 shadow-sm' : 'border-[#E3E8EF] bg-white hover:border-slate-300'}`}
+                      >
+                        <div className={`mt-0.5 w-3.5 h-3.5 rounded-full border shrink-0 flex items-center justify-center ${sessionType === 'cbt' ? 'border-[#1549C7]' : 'border-slate-300'}`}>
+                          {sessionType === 'cbt' && <div className="w-1.5 h-1.5 rounded-full bg-[#1549C7]" />}
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-bold text-slate-800">CBT Psychotherapy Session</div>
+                          <div className="text-[9.5px] text-slate-500 leading-tight">สรุปโมเดลความคิด-พฤติกรรม (10 หัวข้อย่อย)</div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setSessionType('psychiatric');
+                          setNotes({});
+                          setNoteDrafts({});
+                        }}
+                        className={`w-full text-left p-2 rounded-lg border transition-all flex items-start gap-2 ${sessionType === 'psychiatric' ? 'border-[#1549C7] bg-blue-50/55 shadow-sm' : 'border-[#E3E8EF] bg-white hover:border-slate-300'}`}
+                      >
+                        <div className={`mt-0.5 w-3.5 h-3.5 rounded-full border shrink-0 flex items-center justify-center ${sessionType === 'psychiatric' ? 'border-[#1549C7]' : 'border-slate-300'}`}>
+                          {sessionType === 'psychiatric' && <div className="w-1.5 h-1.5 rounded-full bg-[#1549C7]" />}
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-bold text-slate-800">Psychiatric Session (SOAP)</div>
+                          <div className="text-[9.5px] text-slate-500 leading-tight">สรุปเวชระเบียนมาตรฐานแพทยสภาสากล SOAP</div>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Mode Selector */}
                   <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
                     <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center gap-2">
@@ -977,10 +1152,10 @@ Generated: ${new Date().toLocaleString('th-TH')}
                   {Object.keys(notes).length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400">
                       <BrainCircuit size={48} className="opacity-20 mb-4" />
-                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">ระบบจะวิเคราะห์และสรุปด้วย 3 โมเดลพร้อมกันเพื่อให้เลือกใช้งาน</span></p>
+                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">{sessionType === 'cbt' ? 'ระบบจะวิเคราะห์และสรุปด้วย 2 โมเดล (RAG และ Fine-tuning) พร้อมกันเพื่อให้คุณเลือกใช้งานต่อ' : 'ระบบจะวิเคราะห์และสรุปด้วย 3 โมเดลในรูปแบบ SOAP Note มาตรฐานจิตเวชสากล พร้อมกัน'}</span></p>
                     </div>
                   ) : (
-                    ['baseline', 'rag', 'finetuned'].map((m) => {
+                    (sessionType === 'cbt' ? ['rag', 'finetuned'] : ['baseline', 'rag', 'finetuned']).map((m) => {
                       const note = notes[m];
                       if (!note) return null;
                       const draft = noteDrafts[m] || note;
@@ -1028,100 +1203,15 @@ Generated: ${new Date().toLocaleString('th-TH')}
                           </div>
 
                           {/* Section Summaries */}
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            <div className="space-y-3">
-                              {[
-                                { id: 1, k: 'mood_check', l: 'Mood Check' },
-                                { id: 2, k: 'bridge', l: 'Bridge' },
-                                { id: 3, k: 'agenda', l: 'Agenda' },
-                                { id: 4, k: 'homework_review', l: 'Homework Review' },
-                                { id: 5, k: 'new_topics', l: 'New Topics' },
-                              ].map(f => (
-                                <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm">
-                                   <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">{f.id}. {f.l}</div>
-                                   <textarea 
-                                     value={(noteDrafts[m] as any)?.[f.k] || ''}
-                                     onChange={(e) => handleNoteFieldChange(m, f.k as keyof ClinicalNote, e.target.value)}
-                                     placeholder="N/A"
-                                     className="w-full text-[11.5px] leading-relaxed border-none bg-transparent focus:ring-0 resize-none min-h-[60px] custom-scrollbar"
-                                   />
-                                </div>
-                              ))}
-                            </div>
-
-                            <div className="space-y-4">
-                              {/* Editable CBT Diagram */}
-                              <div className="bg-gradient-to-br from-blue-50/30 to-teal-50/30 border border-blue-100 rounded-xl p-3">
-                                <div className="text-[10px] font-bold text-blue-800 uppercase mb-2 flex items-center gap-2">
-                                  <div className="w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center text-[9px]">6</div>
-                                  CBT Formulation
-                                </div>
-                                
-                                <div className="space-y-2">
-                                  <div className="bg-white rounded-lg p-2 border border-amber-200 shadow-sm">
-                                    <div className="text-[8px] font-bold text-amber-600 uppercase">Situation</div>
-                                    <textarea 
-                                      value={draft.cbt_model.situation || ''} 
-                                      onChange={(e) => handleCbtFieldChange(m, 'situation', e.target.value)}
-                                      className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
-                                    />
-                                  </div>
-                                  
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <div className="bg-white rounded-lg p-2 border border-red-200 shadow-sm">
-                                      <div className="text-[8px] font-bold text-red-600 uppercase">Mood</div>
-                                      <textarea 
-                                        value={draft.cbt_model.mood || ''} 
-                                        onChange={(e) => handleCbtFieldChange(m, 'mood', e.target.value)}
-                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
-                                      />
-                                    </div>
-                                    <div className="bg-white rounded-lg p-2 border border-blue-200 shadow-sm">
-                                      <div className="text-[8px] font-bold text-blue-600 uppercase">Thought</div>
-                                      <textarea 
-                                        value={draft.cbt_model.thoughts || ''} 
-                                        onChange={(e) => handleCbtFieldChange(m, 'thoughts', e.target.value)}
-                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
-                                      />
-                                    </div>
-                                  </div>
-                                  
-                                  <div className="grid grid-cols-2 gap-2">
-                                    <div className="bg-white rounded-lg p-2 border border-teal-200 shadow-sm">
-                                      <div className="text-[8px] font-bold text-teal-600 uppercase">Behavior</div>
-                                      <textarea 
-                                        value={draft.cbt_model.behavior || ''} 
-                                        onChange={(e) => handleCbtFieldChange(m, 'behavior', e.target.value)}
-                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
-                                      />
-                                    </div>
-                                    <div className="bg-white rounded-lg p-2 border border-green-200 shadow-sm">
-                                      <div className="text-[8px] font-bold text-green-600 uppercase">Physical</div>
-                                      <textarea 
-                                        value={draft.cbt_model.physical || ''} 
-                                        onChange={(e) => handleCbtFieldChange(m, 'physical', e.target.value)}
-                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
-                                      />
-                                    </div>
-                                  </div>
-
-                                  <div className="flex justify-end pt-1">
-                                      <button 
-                                        onClick={() => saveAllChanges(m)}
-                                        className="flex items-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[9px] font-bold shadow-sm transition-all"
-                                      >
-                                        <Save size={10} /> Save Changes
-                                      </button>
-                                  </div>
-                                </div>
-                              </div>
-
+                          {sessionType === 'cbt' ? (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                               <div className="space-y-3">
                                 {[
-                                  { id: 7, k: 'intervention', l: 'Intervention' },
-                                  { id: 8, k: 'plan_homework', l: 'Homework' },
-                                  { id: 9, k: 'summary', l: 'Summary' },
-                                  { id: 10, k: 'feedback_appointment', l: 'Risk & Appt' },
+                                  { id: 1, k: 'mood_check', l: 'Mood Check' },
+                                  { id: 2, k: 'bridge', l: 'Bridge' },
+                                  { id: 3, k: 'agenda', l: 'Agenda' },
+                                  { id: 4, k: 'homework_review', l: 'Homework Review' },
+                                  { id: 5, k: 'new_topics', l: 'New Topics' },
                                 ].map(f => (
                                   <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm">
                                      <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">{f.id}. {f.l}</div>
@@ -1134,21 +1224,144 @@ Generated: ${new Date().toLocaleString('th-TH')}
                                   </div>
                                 ))}
                               </div>
-                            </div>
 
-                            {/* Export-only Footer (Hidden in UI, visible in PDF capture) */}
-                            <div className="mt-8 pt-4 border-t border-slate-200 flex justify-between items-end opacity-60">
-                               <div className="text-[9px] text-slate-500">
-                                 <b>RecapMind Clinical Decision Support System</b><br />
-                                 Generated: {new Date().toLocaleString('th-TH')}<br />
-                                 Clinical Integrity: Validated by AI & Practitioner
-                               </div>
-                               <div className="text-[9px] text-slate-400 text-right">
-                                 Developed by <b>Thanvaruj Booranasuksakul</b><br />
-                                 Master of Science Program in Mental Health
-                               </div>
+                              <div className="space-y-4">
+                                {/* Editable CBT Diagram */}
+                                <div className="bg-gradient-to-br from-blue-50/30 to-teal-50/30 border border-blue-100 rounded-xl p-3">
+                                  <div className="text-[10px] font-bold text-blue-800 uppercase mb-2 flex items-center gap-2">
+                                    <div className="w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center text-[9px]">6</div>
+                                    CBT Formulation
+                                  </div>
+                                  
+                                  <div className="space-y-2">
+                                    <div className="bg-white rounded-lg p-2 border border-amber-200 shadow-sm">
+                                      <div className="text-[8px] font-bold text-amber-600 uppercase">Situation</div>
+                                      <textarea 
+                                        value={draft.cbt_model?.situation || ''} 
+                                        onChange={(e) => handleCbtFieldChange(m, 'situation', e.target.value)}
+                                        className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                      />
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="bg-white rounded-lg p-2 border border-red-200 shadow-sm">
+                                        <div className="text-[8px] font-bold text-red-600 uppercase">Mood</div>
+                                        <textarea 
+                                          value={draft.cbt_model?.mood || ''} 
+                                          onChange={(e) => handleCbtFieldChange(m, 'mood', e.target.value)}
+                                          className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                        />
+                                      </div>
+                                      <div className="bg-white rounded-lg p-2 border border-blue-200 shadow-sm">
+                                        <div className="text-[8px] font-bold text-blue-600 uppercase">Thought</div>
+                                        <textarea 
+                                          value={draft.cbt_model?.thoughts || ''} 
+                                          onChange={(e) => handleCbtFieldChange(m, 'thoughts', e.target.value)}
+                                          className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                        />
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <div className="bg-white rounded-lg p-2 border border-teal-200 shadow-sm">
+                                        <div className="text-[8px] font-bold text-teal-600 uppercase">Behavior</div>
+                                        <textarea 
+                                          value={draft.cbt_model?.behavior || ''} 
+                                          onChange={(e) => handleCbtFieldChange(m, 'behavior', e.target.value)}
+                                          className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                        />
+                                      </div>
+                                      <div className="bg-white rounded-lg p-2 border border-green-200 shadow-sm">
+                                        <div className="text-[8px] font-bold text-green-600 uppercase">Physical</div>
+                                        <textarea 
+                                          value={draft.cbt_model?.physical || ''} 
+                                          onChange={(e) => handleCbtFieldChange(m, 'physical', e.target.value)}
+                                          className="w-full text-[11px] leading-snug border-none bg-transparent focus:ring-0 resize-none h-10 custom-scrollbar mt-0.5"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="flex justify-end pt-1">
+                                        <button 
+                                          onClick={() => saveAllChanges(m)}
+                                          className="flex items-center gap-1 px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[9px] font-bold shadow-sm transition-all"
+                                        >
+                                          <Save size={10} /> Save Changes
+                                        </button>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-3">
+                                  {[
+                                    { id: 7, k: 'intervention', l: 'Intervention' },
+                                    { id: 8, k: 'plan_homework', l: 'Homework' },
+                                    { id: 9, k: 'summary', l: 'Summary' },
+                                    { id: 10, k: 'feedback_appointment', l: 'Risk & Appt' },
+                                  ].map(f => (
+                                    <div key={f.id} className="bg-white border border-slate-200 rounded-lg p-2.5 shadow-sm">
+                                       <div className="text-[10px] font-bold text-blue-600 uppercase mb-1">{f.id}. {f.l}</div>
+                                       <textarea 
+                                         value={(noteDrafts[m] as any)?.[f.k] || ''}
+                                         onChange={(e) => handleNoteFieldChange(m, f.k as keyof ClinicalNote, e.target.value)}
+                                         placeholder="N/A"
+                                         className="w-full text-[11.5px] leading-relaxed border-none bg-transparent focus:ring-0 resize-none min-h-[60px] custom-scrollbar"
+                                       />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Export-only Footer */}
+                              <div className="mt-8 pt-4 border-t border-slate-200 flex justify-between items-end opacity-60 col-span-2">
+                                 <div className="text-[9px] text-slate-500">
+                                   <b>RecapMind Clinical Decision Support System</b><br />
+                                   Generated: {new Date().toLocaleString('th-TH')}<br />
+                                   Clinical Integrity: Validated by AI & Practitioner
+                                 </div>
+                                 <div className="text-[9px] text-slate-400 text-right">
+                                   Developed by <b>Thanvaruj Booranasuksakul</b><br />
+                                   Master of Science Program in Mental Health
+                                 </div>
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            // Psychiatric SOAP Layout - Only 4 SOAP standard clinical medicine sections
+                            <div className="grid grid-cols-1 gap-5">
+                              {[
+                                { id: 1, k: 'history', l: 'Subjective & Objective History (ประวัติการซักและทบทวนการรักษา)', placeholder: 'ประวัติเรื่องที่พูดคุยกัน ทบทวนการรักษาที่ผ่านมา เรื่องราวที่ซักประวัติ...' },
+                                { id: 2, k: 'mental_status', l: 'Mental Status Examination (MSE - มาตรฐานทางจิตเวชสากล)', placeholder: 'ลักษณะทั่วไป พฤติกรรม คำพูด อารมณ์ ความตั้งใจวิเคราะห์...' },
+                                { id: 3, k: 'diagnosis', l: 'Clinical Diagnosis according to DSM-5 & ICD-11 with codes', placeholder: 'การวินิจฉัยโรคตามคู่มือ DSM-5 และเกณฑ์ ICD-11 พร้อมรหัสหรือ Code โรค...' },
+                                { id: 4, k: 'treatment_plan', l: 'Treatment Plan & Appointments (รูปแบบการรักษาและการจัดนัดหมาย)', placeholder: 'รูปแบบการรักษาที่ได้รับจากการพูดคุย พร้อมทั้งแผนการนัดหมาย...' }
+                              ].map(f => (
+                                <div key={f.id} className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-sm text-left">
+                                   <div className="text-[11px] font-extrabold text-blue-700 uppercase mb-2 flex items-center gap-1.5 pb-2 border-b border-slate-200/50">
+                                     <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center text-[10px] font-black">{f.id}</span>
+                                     {f.l}
+                                   </div>
+                                   <textarea 
+                                     value={(noteDrafts[m] as any)?.[f.k] || ''}
+                                     onChange={(e) => handleNoteFieldChange(m, f.k as keyof ClinicalNote, e.target.value)}
+                                     placeholder={f.placeholder}
+                                     className="w-full text-[13px] leading-relaxed border-none bg-white p-3 rounded-lg shadow-inner focus:ring-1 focus:ring-blue-500 min-h-[125px] custom-scrollbar focus:outline-none focus:bg-white text-slate-800 font-sans"
+                                   />
+                                </div>
+                              ))}
+
+                              {/* Export-only Psychiatric Footer */}
+                              <div className="mt-8 pt-4 border-t border-slate-200 flex justify-between items-end opacity-60 col-span-1">
+                                 <div className="text-[9px] text-slate-500">
+                                   <b>RecapMind Psychiatric SOAP Clinical CDSS</b><br />
+                                   Generated: {new Date().toLocaleString('th-TH')}<br />
+                                   Clinical Guidelines: Compiled with DSM-5 and ICD-11 Standards
+                                 </div>
+                                 <div className="text-[9px] text-slate-400 text-right">
+                                   Developed by <b>Thanvaruj Booranasuksakul</b><br />
+                                   Master of Science Program in Mental Health
+                                 </div>
+                              </div>
+                            </div>
+                          )}
 
                           {/* Action Footer for specific model */}
                           <div className="flex flex-col gap-4 pt-6 mt-4 border-t border-slate-100 bg-slate-50/50 -mx-6 -mb-6 px-6 pb-6 rounded-b-2xl">
@@ -1314,25 +1527,44 @@ Generated: ${new Date().toLocaleString('th-TH')}
                  ) : (
                    <div className="space-y-8">
                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        {['baseline', 'rag', 'finetuned'].map(m => (
-                          <div key={m} className={`bg-white rounded-2xl p-4 border-2 shadow-sm ${selectedModel === m ? 'border-blue-500' : 'border-slate-100'}`}>
-                              <div className="flex justify-between items-center mb-3">
-                                <h3 className="font-bold text-[13px] uppercase">{m === 'baseline' ? '📝 Baseline' : m === 'rag' ? '🧠 RAG' : '💾 Fine-tuned'}</h3>
-                                {selectedModel === m && <span className="bg-blue-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">ACTIVE</span>}
-                              </div>
-                              <div className="space-y-3">
-                                 <div>
-                                   <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">Mood Extract</div>
-                                   <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{(notes[m] as any).mood_check}</div>
-                                 </div>
-                                 <div>
-                                   <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">CBT Thinking</div>
-                                   <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{(notes[m] as any).cbt_model.thoughts}</div>
-                                 </div>
-                                 <button onClick={() => setSelectedModel(m as any)} className="w-full text-center text-blue-600 text-[11px] font-bold pt-2">View Detail →</button>
-                              </div>
-                          </div>
-                        ))}
+                        {(sessionType === 'cbt' ? ['rag', 'finetuned'] : ['baseline', 'rag', 'finetuned']).map(m => {
+                          const note = notes[m];
+                          if (!note) return null;
+                          return (
+                            <div key={m} className={`bg-white rounded-2xl p-4 border-2 shadow-sm ${selectedModel === m ? 'border-blue-500' : 'border-slate-100'}`}>
+                                <div className="flex justify-between items-center mb-3">
+                                  <h3 className="font-bold text-[13px] uppercase">{m === 'baseline' ? '📝 Baseline' : m === 'rag' ? '🧠 RAG' : '💾 Fine-tuned'}</h3>
+                                  {selectedModel === m && <span className="bg-blue-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">ACTIVE</span>}
+                                </div>
+                                <div className="space-y-3">
+                                   {sessionType === 'cbt' ? (
+                                     <>
+                                       <div>
+                                         <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">Mood Extract</div>
+                                         <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{note.mood_check}</div>
+                                       </div>
+                                       <div>
+                                         <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">CBT Thinking</div>
+                                         <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{note.cbt_model?.thoughts}</div>
+                                       </div>
+                                     </>
+                                   ) : (
+                                     <>
+                                       <div>
+                                         <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">Diagnoses (DSM-5 / ICD-11)</div>
+                                         <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{note.diagnosis}</div>
+                                       </div>
+                                       <div>
+                                         <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">Treatment & Appointment</div>
+                                         <div className="text-[11px] p-2 bg-slate-50 rounded border border-slate-100 line-clamp-2">{note.treatment_plan}</div>
+                                       </div>
+                                     </>
+                                   )}
+                                   <button onClick={() => setSelectedModel(m as any)} className="w-full text-center text-blue-600 text-[11px] font-bold pt-2">View Detail →</button>
+                                </div>
+                            </div>
+                          );
+                        })}
                      </div>
 
                      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">

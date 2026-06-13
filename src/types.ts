@@ -49,22 +49,28 @@ export interface Metrics {
 }
 
 export interface ClinicalNote {
-  mood_check: string;
-  bridge: string;
-  agenda: string;
-  homework_review: string;
-  new_topics: string;
-  cbt_model: {
+  mood_check?: string;
+  bridge?: string;
+  agenda?: string;
+  homework_review?: string;
+  new_topics?: string;
+  cbt_model?: {
     situation: string;
     mood: string;
     thoughts: string;
     behavior: string;
     physical: string;
   };
-  intervention: string;
-  plan_homework: string;
-  summary: string;
-  feedback_appointment: string;
+  intervention?: string;
+  plan_homework?: string;
+  summary?: string;
+  feedback_appointment?: string;
+
+  // Psychiatric SOAP Notes fields
+  history?: string;
+  mental_status?: string;
+  diagnosis?: string;
+  treatment_plan?: string;
 }
 
 export interface SafetyStatus {

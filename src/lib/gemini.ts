@@ -71,20 +71,109 @@ export const fineTunedSystemPrompt = `คุณคือจิตแพทย์
 โครงสร้าง JSON:
 ${NOTE_SCHEMA_JSON}`;
 
+export const psychiatricBaselinePrompt = `คุณคือจิตแพทย์ผู้เชี่ยวชาญด้านจิตเวชศาสตร์และเวชระเบียนสากล
+หน้าที่ของคุณคือสรุปบทสนทนาการรักษาพยาบาลทางจิตเวช (Clinical Transcript) ให้เป็นเวชระเบียนสากลรูปแบบ SOAP Note ทางจิตเวชโดยตรง
+
+กฎเหล็ก:
+1. สกัดเฉพาะข้อมูลที่มีอยู่จริง ห้ามแต่งเติมเด็ดขาด (Zero Hallucination)
+2. สรุปโดยใช้ภาษาไทยทางคลินิกที่สละสลวยและเป็นทางการตามหลักวิชาชีพแพทย์จิตเวชสากล
+3. ตอบเป็น JSON เท่านั้น — ห้ามมีข้อความอื่นใดภายนอก JSON และห้ามใส่ Markdown tags (\`\`\`json) เด็ดขาด
+4. ต้องระบุรหัสโรค DSM-5 และ ICD-11 พร้อม Code เสมอ เช่น Major Depressive Disorder (ICD-11: 6A71 / DSM-5: 296.22) หรือ Generalized Anxiety Disorder (ICD-11: 6B00 / DSM-5: 300.02)
+
+โครงสร้าง JSON ที่ต้องการ:
+{
+  "history": "1. Subjective & Objective History: สรุปประวัติเรื่องที่ผู้ป่วยและแพทย์พูดคุยกัน ทบทวนประวัติการรักษาที่ผ่านมา และเรื่องราวทั้งหมดที่เกิดขึ้นจากการซักประวัติของแพทย์อย่างละเอียดและครอบคลุม",
+  "mental_status": "2. Mental Status Examination: การประเมินสภาพจิตใจตามมาตรฐานจิตเวชสากล (Mental Status Examination - MSE) เช่น Appearance, Behavior, Speech, Affect, Mood, Cognitive function, Insight ที่สังเกตและวิเคราะห์ได้จากบทสนทนา",
+  "diagnosis": "3. Diagnoses according to DSM-5 and ICD-11 with codes: การวินิจฉัยโรคตามเกณฑ์ DSM-5 และเกณฑ์ ICD-11 พร้อมรหัสโรคทางคลินิกวิชาชีพ (เช่น F32.1, 296.22) จากเคสจริง",
+  "treatment_plan": "4. Treatment Plan & Appointments: รูปแบบการรักษาที่ได้รับจากการพูดคุย (เช่น จิตบำบัดประคับประคอง, การจ่ายหรือปรับยา) พร้อมทั้งกำหนดการนัดหมายครั้งถัดไปอย่างเจาะจง"
+}`;
+
+export const psychiatricRAGPrompt = `คุณคือจิตแพทย์ผู้เชี่ยวชาญ คลินิกวิชารักษ์สุขภาพจิต (Expert SOAP Scribe Mode)
+หน้าที่ของคุณคือวิเคราะห์ข้อมูลและถอดความหมายของเซสชั่นการรักษาเพื่อเขียนเป็น SOAP Note คุณภาพสูงเลียนแบบแพทย์อาวุโส
+
+นี่คือแนวทางการจัดทำ SOAP Note ทางคลินิกคุณภาพสูง:
+- history: รายงานอาการ ปัญหาสำคัญ (Chief Complaint) ทบทวนประวัติร่วมกับแพทย์ ความเป็นมาของชีวิตผู้ป่วย
+- mental_status: สรุปพฤติกรรมและการรู้คิด (Alertness, Speech, Mood, Affect, Thought content, Congruency, Judgment, Insight)
+- diagnosis: เขียนโรคหลัก โรครอง หรือปัญหาอื่นๆ อ้างอิงตามเกณฑ์ DSM-5 และ ICD-11 พร้อมรหัสโรคสากลทุกวินิจฉัย
+- treatment_plan: แผนจิตบำบัดบวกยา และกำหนดนัดของแผนกผู้ป่วยนอกที่เหมาะสม
+
+สกัดเฉพาะข้อมูลใน Transcript ปัจจุบันโดยห้ามมโนข้อมูลใหม่เด็ดขาด (Zero Hallucination) หากข้อมูลส่วนใดขาดหายให้เขียนวิเคราะห์อิงจากข้อมูลที่มีตามความเป็นจริง
+ตอบเป็น JSON เท่านั้น มีครบ 4 keys: "history", "mental_status", "diagnosis", "treatment_plan" และต้องไม่ปะปนข้อความอื่นเลย`;
+
+export const psychiatricFineTunedPrompt = `คุณคือระบบปัญญาประดิษฐ์ทางเวชสารสนเทศจิตเวช (Fine-Tuned Expert SOAP Note) ที่ตอบคู่กับระดับการบันทึกของแพทย์ผู้เชี่ยวชาญในโรงพยาบาลมหาวิทยาลัยชั้นนำ
+สกัดและสรุปบทตรวจรักษาจิตเวชใน Transcript ปัจจุบันให้เป็นเวชระเบียน SOAP จิตเวชสากลในรูปของ JSON วารสารวิชาการทางการแพทย์
+
+เกณฑ์การให้คะแนนทางคลินิกสูงสุด:
+1. History: รวบรวมข้อมูลเรื่องราวอย่างเป็นลำดับ ทบทวนอาการข้างเคียงของยากลุ่มเก่า และเจรจากับคนไข้
+2. Mental Status: บันทึกข้อมูลจิตใจ ความตั้งใจ สมาธิ กระบวนการคิดอย่างลึกซึ้ง
+3. Diagnosis: นำเสนอ Code ตามเกณฑ์ DSM-5 และ ICD-11 อย่างรัดกุมถูกต้อง
+4. Treatment: อภิปรายแนวทางบำบัดยา แนะนำเทคนิคชีวิต และความเข้ากันได้กับการนัดหมาย
+
+ตอบคำตอบเฉพาะรูป JSON ดิบเท่านั้น ห้ามมีโค้ด Markdown หรืออารัมภบทอื่นใดเด็ดขาด`;
+
 export async function generateClinicalNote(
   transcript: string, 
   modelType: 'baseline' | 'rag' | 'finetuned', 
   ragCases?: typeof CASE_EXAMPLES,
-  caseTheme?: string
+  caseTheme?: string,
+  sessionType: 'cbt' | 'psychiatric' = 'cbt',
+  userCases?: any[]
 ): Promise<ClinicalNote> {
   let systemPrompt = baselineSystemPrompt;
-  if (modelType === 'rag' && ragCases) {
-    systemPrompt = getRAGSystemPrompt(ragCases);
-  } else if (modelType === 'finetuned') {
-    systemPrompt = fineTunedSystemPrompt;
+  let responseSchema = NOTE_SCHEMA_JSON;
+  
+  if (sessionType === 'cbt') {
+    if (modelType === 'rag' && ragCases) {
+      systemPrompt = getRAGSystemPrompt(ragCases);
+    } else if (modelType === 'finetuned') {
+      systemPrompt = fineTunedSystemPrompt;
+    } else {
+      systemPrompt = baselineSystemPrompt;
+    }
+  } else {
+    // Psychiatric Session Prompts
+    responseSchema = `{
+      "history": "ประวัติเรื่องที่ผู้ป่วยและแพทย์พูดคุยกัน ทบทวนการรักษาที่ผ่านมา เรื่องราวที่ซักประวัติ",
+      "mental_status": "Mental Status Examination มาตรฐานทางจิตเวชสากล",
+      "diagnosis": "การวินิจฉัยตาม DSM-5 and ICD-11 พร้อม code",
+      "treatment_plan": "รูปแบบการรักษาที่ได้รับจากการพูดคุย พร้อมทั้งการนัดหมาย"
+    }`;
+    
+    if (modelType === 'rag') {
+      systemPrompt = psychiatricRAGPrompt;
+    } else if (modelType === 'finetuned') {
+      systemPrompt = psychiatricFineTunedPrompt;
+    } else {
+      systemPrompt = psychiatricBaselinePrompt;
+    }
   }
 
-  const prompt = `Case Theme/Context: ${caseTheme || 'General Mental Health'}\n\nCBT Session Transcript (De-identified):\n\n${transcript}\n\nสรุปเป็น JSON format ที่กำหนด`;
+  let humanExamplesText = '';
+  if (userCases && userCases.length > 0) {
+    // Filter relevant cases by format style
+    const relevantUserCases = userCases.filter(uc => {
+      if (!uc.final_note) return false;
+      const isPsych = uc.final_note.history !== undefined;
+      return sessionType === 'psychiatric' ? isPsych : !isPsych;
+    }).slice(-5); // take up to 5 most recent items
+
+    if (relevantUserCases.length > 0) {
+      humanExamplesText = `\n\n=== IMPORTANT: CLINICIAN'S CUSTOM PREFERRED PATTERNS (HUMAN IN THE LOOP LEARNING) ===
+ต่อไปนี้คือรายงานเวชระเบียนที่แพทย์มนุษย์ (ผู้ใช้ระบบนี้) ได้ทำการแก้ไขคำตอบด้วยตัวเองจนได้ผลลัพธ์ระดับทองคำ (Gold Standard) จากบทสนทนาก่อนหน้า
+กรุณาเรียนรู้แนวทางการปรับคำเรียงความ, ระดับความลึก, การลงรหัสโรค, และสไตล์เฉพาะตัวของแพทย์รายนี้ เพื่อให้งานเขียนสรุปของคุณอัปเดตสอดคล้องกับความต้องการของแพทย์สูงสุด!
+
+`;
+      relevantUserCases.forEach((uc, idx) => {
+        humanExamplesText += `[ตัวอย่างแก้ไขโดยมนุษย์ ${idx + 1}]
+Transcript ก่อนแก้ไข: "${uc.transcript}"
+เวชระเบียนที่แพทย์แก้ไขเสร็จสมบูรณ์แล้ว (เป้าหมายปลายทางที่ถูกต้องที่สุด):
+${JSON.stringify(uc.final_note, null, 2)}\n\n`;
+      });
+      humanExamplesText += `โปรดนำสไตล์ โครงสร้าง และสุนทรียภาพทางภาษาจาก "ตัวอย่างแก้ไขโดยมนุษย์" ข้างต้นนี้ไปใช้เขียนสรุปเวชระเบียนของบทสนทนารอบนี้ด้วยความแม่นยำสูงสุด คืนค่าคำตอบเป็นโครงสร้าง JSON เท่านั้นไม่มีข้อความอื่นภายนอกเลย!\n`;
+    }
+  }
+
+  const prompt = `Case Theme/Context: ${caseTheme || 'General Mental Health'}\n\nSession Transcript (De-identified):\n\n${transcript}\n\n${humanExamplesText}\n\nสรุปเป็น JSON format ตามโครงสร้างกำหนด:\n${responseSchema}`;
 
   try {
     const response = await fetch('/api/generate-note', {

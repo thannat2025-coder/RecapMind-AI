@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { ClinicalNote } from '../types';
 
@@ -20,6 +20,28 @@ export const loginWithGoogle = async () => {
 };
 
 export const logout = () => auth.signOut();
+
+export const getTrainingData = async (): Promise<any[]> => {
+  if (!auth.currentUser) return [];
+  try {
+    const q = query(
+      collection(db, 'training_data'),
+      where('author_id', '==', auth.currentUser.uid)
+    );
+    const querySnapshot = await getDocs(q);
+    const list: any[] = [];
+    querySnapshot.forEach((doc) => {
+      list.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+    return list;
+  } catch (error) {
+    console.error("Error fetching training data:", error);
+    return [];
+  }
+};
 
 export const saveTrainingData = async (
   transcript: string, 
