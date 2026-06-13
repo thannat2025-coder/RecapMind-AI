@@ -109,6 +109,7 @@ export default function App() {
   }, []);
 
   const [userCases, setUserCases] = useState<any[]>([]);
+  const hasUserPsychCases = userCases.some(uc => uc.final_note && uc.final_note.history !== undefined && uc.transcript);
 
   const fetchUserCases = async () => {
     try {
@@ -357,24 +358,11 @@ export default function App() {
         setNoteDrafts(JSON.parse(JSON.stringify(generatedNotes)));
         setSelectedModel('rag');
       } else {
-        // Parallel generation for Psychiatric SOAP (Baseline, RAG, Finetuned)
-        const [baseline, rag, finetuned] = await Promise.allSettled([
-          generateClinicalNote(transcript, 'baseline', undefined, caseTheme, 'psychiatric', userCases),
-          generateClinicalNote(transcript, 'rag', undefined, caseTheme, 'psychiatric', userCases),
-          generateClinicalNote(transcript, 'finetuned', undefined, caseTheme, 'psychiatric', userCases)
-        ]);
+        // Single generation for Psychiatric SOAP (Dynamic RAG / Zero-Shot)
+        const noteResult = await generateClinicalNote(transcript, 'rag', undefined, caseTheme, 'psychiatric', userCases);
    
-        const emptyPsychNote: ClinicalNote = {
-          history: 'NA',
-          mental_status: 'NA',
-          diagnosis: 'NA',
-          treatment_plan: 'NA'
-        };
-  
         const generatedNotes = {
-          baseline: baseline.status === 'fulfilled' ? baseline.value : { ...emptyPsychNote, history: 'Error: API Failed' },
-          rag: rag.status === 'fulfilled' ? rag.value : { ...emptyPsychNote, history: 'Error: API Failed' },
-          finetuned: finetuned.status === 'fulfilled' ? finetuned.value : { ...emptyPsychNote, history: 'Error: API Failed' }
+          rag: noteResult
         };
   
         setNotes(generatedNotes);
@@ -868,12 +856,14 @@ Generated: ${new Date().toLocaleString('th-TH')}
         >
           🩺 บันทึก & สรุป
         </button>
-        <button 
-          onClick={() => setActiveTab(Tab.COMPARE)}
-          className={`px-[15px] py-[9px] text-[12.5px] font-semibold transition-all border-b-[2.5px] ${activeTab === Tab.COMPARE ? 'text-[#1549C7] border-[#1549C7]' : 'text-[#64748B] border-transparent hover:text-slate-900'}`}
-        >
-          📊 เปรียบเทียบ
-        </button>
+        {sessionType === 'cbt' && (
+          <button 
+            onClick={() => setActiveTab(Tab.COMPARE)}
+            className={`px-[15px] py-[9px] text-[12.5px] font-semibold transition-all border-b-[2.5px] ${activeTab === Tab.COMPARE ? 'text-[#1549C7] border-[#1549C7]' : 'text-[#64748B] border-transparent hover:text-slate-900'}`}
+          >
+            📊 เปรียบเทียบ
+          </button>
+        )}
         <button 
           onClick={() => setActiveTab(Tab.ABOUT)}
           className={`px-[15px] py-[9px] text-[12.5px] font-semibold transition-all border-b-[2.5px] ${activeTab === Tab.ABOUT ? 'text-[#1549C7] border-[#1549C7]' : 'text-[#64748B] border-transparent hover:text-slate-900'}`}
@@ -930,6 +920,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
                           setSessionType('psychiatric');
                           setNotes({});
                           setNoteDrafts({});
+                          setActiveTab(Tab.MAIN);
                         }}
                         className={`w-full text-left p-2 rounded-lg border transition-all flex items-start gap-2 ${sessionType === 'psychiatric' ? 'border-[#1549C7] bg-blue-50/55 shadow-sm' : 'border-[#E3E8EF] bg-white hover:border-slate-300'}`}
                       >
@@ -1141,10 +1132,10 @@ Generated: ${new Date().toLocaleString('th-TH')}
                    
                     {/* Model Info Header */}
                     <div className="flex items-center gap-2 mt-2">
-                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                         {Object.keys(notes).length} Models Compared
+                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-[#E3E8EF]">
+                         {sessionType === 'cbt' ? `${Object.keys(notes).length} Models Compared` : '1 Unified Personalized Scribe'}
                        </span>
-                       <span className="text-[10px] text-slate-400 font-medium">Gemini 3 Flash Analyze & Formulate</span>
+                       <span className="text-[10px] text-slate-400 font-medium">Gemini Scribe Sessional Analysis</span>
                     </div>
                 </div>
 
@@ -1152,10 +1143,10 @@ Generated: ${new Date().toLocaleString('th-TH')}
                   {Object.keys(notes).length === 0 ? (
                     <div className="h-full flex flex-col items-center justify-center text-slate-400">
                       <BrainCircuit size={48} className="opacity-20 mb-4" />
-                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">{sessionType === 'cbt' ? 'ระบบจะวิเคราะห์และสรุปด้วย 2 โมเดล (RAG และ Fine-tuning) พร้อมกันเพื่อให้คุณเลือกใช้งานต่อ' : 'ระบบจะวิเคราะห์และสรุปด้วย 3 โมเดลในรูปแบบ SOAP Note มาตรฐานจิตเวชสากล พร้อมกัน'}</span></p>
+                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">{sessionType === 'cbt' ? 'ระบบจะวิเคราะห์และสรุปด้วย 2 โมเดล (RAG และ Fine-tuning) พร้อมกันเพื่อให้คุณเลือกใช้งานต่อ' : 'ระบบจะประมวลผลดึงประวัติแพทย์ป้อนและเขียน SOAP Note อัจฉริยะ (Dynamic RAG) เพียง 1 ฉบับที่แม่นยำสูงสุด'}</span></p>
                     </div>
                   ) : (
-                    (sessionType === 'cbt' ? ['rag', 'finetuned'] : ['baseline', 'rag', 'finetuned']).map((m) => {
+                    (sessionType === 'cbt' ? ['rag', 'finetuned'] : ['rag']).map((m) => {
                       const note = notes[m];
                       if (!note) return null;
                       const draft = noteDrafts[m] || note;
@@ -1168,23 +1159,33 @@ Generated: ${new Date().toLocaleString('th-TH')}
                           onClick={() => setSelectedModel(m as any)}
                         >
                           {/* Model Ribbon */}
-                          <div className={`absolute top-0 right-0 px-4 py-1 text-[10px] font-black uppercase tracking-widest text-white rounded-bl-xl ${m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
-                            {m} model
+                          <div className={`absolute top-0 right-0 px-4 py-1 text-[10px] font-black uppercase tracking-widest text-white rounded-bl-xl ${sessionType === 'psychiatric' ? 'bg-[#1549C7]' : m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
+                            {sessionType === 'psychiatric' ? (hasUserPsychCases ? 'Dynamic RAG' : 'Zero-shot') : `${m} model`}
                           </div>
 
                           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white ${m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
-                              {m === 'baseline' && <FileText size={18} />}
-                              {m === 'rag' && <Database size={18} />}
-                              {m === 'finetuned' && <Zap size={18} />}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white ${sessionType === 'psychiatric' ? 'bg-[#1549C7]' : m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
+                              {sessionType === 'psychiatric' ? <Database size={18} /> : (
+                                <>
+                                  {m === 'baseline' && <FileText size={18} />}
+                                  {m === 'rag' && <Database size={18} />}
+                                  {m === 'finetuned' && <Zap size={18} />}
+                                </>
+                              )}
                             </div>
                             <div className="flex-1">
                                <div className="flex justify-between items-start">
                                  <div>
                                    <h3 className="text-[14px] font-bold">
-                                     {m === 'baseline' && 'Baseline Generation (Zero-shot)'}
-                                     {m === 'rag' && 'RAG Enhanced (Clinical KB)'}
-                                     {m === 'finetuned' && 'Fine-tuned (Expert Logic)'}
+                                     {sessionType === 'psychiatric' ? (
+                                       hasUserPsychCases ? 'Personalized SOAP Note (Dynamic Few-Shot RAG)' : 'Standard SOAP Note (Zero-Shot Baseline)'
+                                     ) : (
+                                       <>
+                                         {m === 'baseline' && 'Baseline Generation (Zero-shot)'}
+                                         {m === 'rag' && 'RAG Enhanced (Clinical KB)'}
+                                         {m === 'finetuned' && 'Fine-tuned (Expert Logic)'}
+                                       </>
+                                     )}
                                    </h3>
                                    <div className="flex gap-2 items-center mt-0.5">
                                       <p className="text-[10px] text-slate-400 font-medium">AI Clinical Scribe Draft • Gemini 3 Flash</p>

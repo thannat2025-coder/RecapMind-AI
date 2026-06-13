@@ -1,5 +1,41 @@
 import { CASE_EXAMPLES, NOTE_SCHEMA_JSON } from "../constants";
 import { ClinicalNote } from "../types";
+import { retrieveUserRagCases } from "../utils";
+
+export function getPsychiatryFewShotPrompt(retrievedUserCases: any[]) {
+  const examples = retrievedUserCases.map((c, i) => `
+[ตัวอย่างเวชระเบียนที่สืบค้นจากคลังข้อมูลของคุณ (ตัวอย่างที่ ${i + 1})]
+บทสนทนาการรักษา (Session Transcript):
+"${c.transcript}"
+
+สรุปเวชระเบียนรูปแบบ SOAP Note ที่แพทย์แก้ไขเสร็จสมบูรณ์ระดับทองคำ (Clinician Gold Standard SOAP Note):
+{
+  "history": "${c.final_note.history}",
+  "mental_status": "${c.final_note.mental_status}",
+  "diagnosis": "${c.final_note.diagnosis}",
+  "treatment_plan": "${c.final_note.treatment_plan}"
+}
+`).join('\n\n');
+
+  return `คุณคือจิตแพทย์ผู้เชี่ยวชาญ คลินิกวิชารักษ์สุขภาพจิต (Dynamic SOAP RAG Scribe Mode)
+หน้าที่ของคุณคือวิเคราะห์ข้อมูลและถอดความหมายของเซสชั่นการรักษาเพื่อเขียนเป็น SOAP Note คุณภาพสูง โดยเลียนแบบแนวทางการสรุป สไตล์การใช้ภาษาไทยสำหรับแพทย์ และสุนทรียภาพเฉพาะตัวของแพทย์มนุษย์ที่กำหนดมาในตัวอย่างด้านล่างนี้อย่างรัดกุม
+
+แนวทางการจัดทำ SOAP Note ทางคลินิกคุณภาพสูง:
+- history: รายงานอาการ ปัญหาสำคัญ (Chief Complaint) ทบทวนประวัติร่วมกับแพทย์ ความเป็นมาของชีวิตผู้ป่วย
+- mental_status: สรุปพฤติกรรมและการรู้คิด (Alertness, Speech, Mood, Affect, Thought content, Congruency, Judgment, Insight)
+- diagnosis: เขียนโรคหลัก โรครอง หรือปัญหาอื่นๆ อ้างอิงตามเกณฑ์ DSM-5 และ ICD-11 พร้อมรหัสโรคสากลทุกวินิจฉัย
+- treatment_plan: แผนจิตบำบัดบวกยา และกำหนดนัดของแผนกผู้ป่วยนอกที่เหมาะสม
+
+กฎเหล็ก:
+1. **Zero Hallucination**: สกัดเฉพาะข้อมูลใน Transcript ปัจจุบันโดยห้ามเพิ่มคำบรรยายหรือแต่งเติมเด็ดขาด หากไม่มีข้อมูลส่วนใดขาดหายให้เขียนวิเคราะห์อิงจากข้อมูลที่มีตามความเป็นจริง
+2. **Human Style Adaptation**: วิเคราะห์ตัวอย่างด้านล่าง จากนั้นกรอกข้อมูลให้มีภาษา น้ำเสียง และสไตล์การเขียนระดับเดียวกับแพทย์มนุษย์
+3. ตอบเป็น JSON เท่านั้น มีครบ 4 keys: "history", "mental_status", "diagnosis", "treatment_plan" และต้องไม่ปะปนข้อความอื่นเลย ห้ามใส่ Markdown tags (\`\`\`json) เด็ดขาด
+
+=== ตัวอย่างเคสที่สืบค้นได้จากคลังข้อมูลของคุณหมอ (Dynamic Few-shot from Doctor's History) ===
+${examples}
+
+สรุปเป็น JSON format ตามโครงสร้างกำหนดอย่างถูกต้องแม่นยำสูงสูด:`;
+}
 
 export const baselineSystemPrompt = `คุณคือจิตแพทย์ผู้เชี่ยวชาญด้านจิตเวชศาสตร์เด็ก วัยรุ่น และ Cognitive Behavioral Therapy (CBT)
 หน้าที่ของคุณคือการทำหน้าที่เป็น "AI Clinical Scribe" วิเคราะห์และสรุปบทสนทนาให้เป็นเวชระเบียน
@@ -121,6 +157,7 @@ export async function generateClinicalNote(
 ): Promise<ClinicalNote> {
   let systemPrompt = baselineSystemPrompt;
   let responseSchema = NOTE_SCHEMA_JSON;
+  let humanExamplesText = '';
   
   if (sessionType === 'cbt') {
     if (modelType === 'rag' && ragCases) {
@@ -129,6 +166,30 @@ export async function generateClinicalNote(
       systemPrompt = fineTunedSystemPrompt;
     } else {
       systemPrompt = baselineSystemPrompt;
+    }
+
+    if (userCases && userCases.length > 0) {
+      // Filter relevant cases by format style
+      const relevantUserCases = userCases.filter(uc => {
+        if (!uc.final_note) return false;
+        const isPsych = uc.final_note.history !== undefined;
+        return !isPsych;
+      }).slice(-5); // take up to 5 most recent items
+
+      if (relevantUserCases.length > 0) {
+        humanExamplesText = `\n\n=== IMPORTANT: CLINICIAN'S CUSTOM PREFERRED PATTERNS (HUMAN IN THE LOOP LEARNING) ===
+ต่อไปนี้คือรายงานเวชระเบียนที่แพทย์มนุษย์ (ผู้ใช้ระบบนี้) ได้ทำการแก้ไขคำตอบด้วยตัวเองจนได้ผลลัพธ์ระดับทองคำ (Gold Standard) จากบทสนทนาก่อนหน้า
+กรุณาเรียนรู้แนวทางการปรับคำเรียงความ, ระดับความลึก, การลงรหัสโรค, และสไตล์เฉพาะตัวของแพทย์รายนี้ เพื่อให้งานเขียนสรุปของคุณอัปเดตสอดคล้องกับความต้องการ of แพทย์สูงสุด!
+
+`;
+        relevantUserCases.forEach((uc, idx) => {
+          humanExamplesText += `[ตัวอย่างแก้ไขโดยมนุษย์ ${idx + 1}]
+Transcript ก่อนแก้ไข: "${uc.transcript}"
+เวชระเบียนที่แพทย์แก้ไขเสร็จสมบูรณ์แล้ว (เป้าหมายปลายทางที่ถูกต้องที่สุด):
+${JSON.stringify(uc.final_note, null, 2)}\n\n`;
+        });
+        humanExamplesText += `โปรดนำสไตล์ โครงสร้าง และสุนทรียภาพทางภาษาจาก "ตัวอย่างแก้ไขโดยมนุษย์" ข้างต้นนี้ไปใช้เขียนสรุปเวชระเบียนของบทสนทนารอบนี้ด้วยความแม่นยำสูงสุด คืนค่าคำตอบเป็นโครงสร้าง JSON เท่านั้นไม่มีข้อความอื่นภายนอกเลย!\n`;
+      }
     }
   } else {
     // Psychiatric Session Prompts
@@ -139,37 +200,15 @@ export async function generateClinicalNote(
       "treatment_plan": "รูปแบบการรักษาที่ได้รับจากการพูดคุย พร้อมทั้งการนัดหมาย"
     }`;
     
-    if (modelType === 'rag') {
-      systemPrompt = psychiatricRAGPrompt;
-    } else if (modelType === 'finetuned') {
-      systemPrompt = psychiatricFineTunedPrompt;
-    } else {
+    // Retrieve relevant custom psychiatric cases (RAG)
+    const relevantPsychUserCases = retrieveUserRagCases(transcript, userCases || [], 3);
+    
+    if (relevantPsychUserCases.length === 0) {
+      // First time - Zero Shot Zero Examples Model
       systemPrompt = psychiatricBaselinePrompt;
-    }
-  }
-
-  let humanExamplesText = '';
-  if (userCases && userCases.length > 0) {
-    // Filter relevant cases by format style
-    const relevantUserCases = userCases.filter(uc => {
-      if (!uc.final_note) return false;
-      const isPsych = uc.final_note.history !== undefined;
-      return sessionType === 'psychiatric' ? isPsych : !isPsych;
-    }).slice(-5); // take up to 5 most recent items
-
-    if (relevantUserCases.length > 0) {
-      humanExamplesText = `\n\n=== IMPORTANT: CLINICIAN'S CUSTOM PREFERRED PATTERNS (HUMAN IN THE LOOP LEARNING) ===
-ต่อไปนี้คือรายงานเวชระเบียนที่แพทย์มนุษย์ (ผู้ใช้ระบบนี้) ได้ทำการแก้ไขคำตอบด้วยตัวเองจนได้ผลลัพธ์ระดับทองคำ (Gold Standard) จากบทสนทนาก่อนหน้า
-กรุณาเรียนรู้แนวทางการปรับคำเรียงความ, ระดับความลึก, การลงรหัสโรค, และสไตล์เฉพาะตัวของแพทย์รายนี้ เพื่อให้งานเขียนสรุปของคุณอัปเดตสอดคล้องกับความต้องการของแพทย์สูงสุด!
-
-`;
-      relevantUserCases.forEach((uc, idx) => {
-        humanExamplesText += `[ตัวอย่างแก้ไขโดยมนุษย์ ${idx + 1}]
-Transcript ก่อนแก้ไข: "${uc.transcript}"
-เวชระเบียนที่แพทย์แก้ไขเสร็จสมบูรณ์แล้ว (เป้าหมายปลายทางที่ถูกต้องที่สุด):
-${JSON.stringify(uc.final_note, null, 2)}\n\n`;
-      });
-      humanExamplesText += `โปรดนำสไตล์ โครงสร้าง และสุนทรียภาพทางภาษาจาก "ตัวอย่างแก้ไขโดยมนุษย์" ข้างต้นนี้ไปใช้เขียนสรุปเวชระเบียนของบทสนทนารอบนี้ด้วยความแม่นยำสูงสุด คืนค่าคำตอบเป็นโครงสร้าง JSON เท่านั้นไม่มีข้อความอื่นภายนอกเลย!\n`;
+    } else {
+      // Subsequent times - Dynamic Few-Shot RAG Model using clinician's own gold-standard data
+      systemPrompt = getPsychiatryFewShotPrompt(relevantPsychUserCases);
     }
   }
 

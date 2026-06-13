@@ -114,3 +114,47 @@ export function retrieveRagCases(query: string, count: number = 3) {
 
   return similarities.sort((a, b) => b.sim - a.sim).slice(0, count);
 }
+
+/**
+ * RAG retrieval on doctor's own past psychiatric SOAP cases using simple keyword overlap
+ */
+export function retrieveUserRagCases(query: string, userCases: any[], count: number = 3) {
+  if (!userCases || userCases.length === 0) return [];
+  
+  // Filter for psychiatric SOAP notes (where history is present)
+  const psychCases = userCases.filter(uc => {
+    return uc.final_note && uc.final_note.history !== undefined && uc.transcript;
+  });
+  
+  if (psychCases.length === 0) return [];
+
+  const normalizedQuery = query.toLowerCase();
+  const stopWords = new Set(['ครับ', 'ค่ะ', 'นะ', 'คะ', 'อ่ะ', 'เอ่อ', 'คือ', 'ว่า', 'ที่', 'ของ', 'เป็น', 'ได้', 'ใน', 'กับ', 'จาก']);
+  const tokenRegex = /[\u0E00-\u0E7Fa-zA-Z0-9]+/g;
+  
+  const queryTokens = (normalizedQuery.match(tokenRegex) || []).filter(x => x.length > 1 && !stopWords.has(x));
+  if (queryTokens.length === 0) {
+    return psychCases.slice(0, count);
+  }
+
+  const scored = psychCases.map(uc => {
+    const ucTokens = (uc.transcript.toLowerCase().match(tokenRegex) || []).filter(x => x.length > 1 && !stopWords.has(x));
+    const tokenSet = new Set(ucTokens);
+    let overlap = 0;
+    queryTokens.forEach(qt => {
+      if (tokenSet.has(qt)) {
+        overlap += 1;
+      }
+    });
+    
+    const unionSize = new Set([...queryTokens, ...ucTokens]).size;
+    const score = unionSize > 0 ? overlap / unionSize : 0;
+    
+    return { ...uc, score };
+  });
+
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, count);
+}
+
