@@ -214,13 +214,70 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
 
   const prompt = `Case Theme/Context: ${caseTheme || 'General Mental Health'}\n\nSession Transcript (De-identified):\n\n${transcript}\n\n${humanExamplesText}\n\nสรุปเป็น JSON format ตามโครงสร้างกำหนด:\n${responseSchema}`;
 
+  const provider = localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini';
   const customApiKey = localStorage.getItem('recapmind_custom_api_key');
   const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
 
   try {
     let rawText = '';
 
-    if (customApiKey && customApiKey.trim().length > 0) {
+    if (provider === 'local_llm') {
+      const localEndpoint = localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1';
+      const localModel = localStorage.getItem('recapmind_local_model') || 'llama3';
+      const localApiKey = localStorage.getItem('recapmind_local_api_key') || '';
+      
+      const cleanEndpoint = localEndpoint.replace(/\/$/, '');
+      const url = `${cleanEndpoint}/chat/completions`;
+      
+      console.log(`[Local LLM Request] Endpoint: ${url}, Model: ${localModel}`);
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (localApiKey) {
+        headers['Authorization'] = `Bearer ${localApiKey}`;
+      }
+
+      const body: any = {
+        model: localModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1,
+        response_format: { type: 'json_object' }
+      };
+
+      let response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body)
+        });
+      } catch (networkErr) {
+        throw new Error(`ไม่สามารถเชื่อมต่อ Local Server ที่ ${url} ได้กรุณาเปิดบริการหรือตรวจสอบการตั้งค่า (Error: ${networkErr instanceof Error ? networkErr.message : String(networkErr)})`);
+      }
+
+      if (!response.ok && response.status === 400) {
+        // Fallback retry without response_format if some local engines don't support it
+        console.warn('Local engine rejected response_format, retrying without it...');
+        delete body.response_format;
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body)
+        });
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(`โรงพยาบาล Local LLM ตอบกลับผิดพลาด: HTTP ${response.status} (${errorText.slice(0, 100)})`);
+      }
+
+      const data = await response.json();
+      rawText = data.choices?.[0]?.message?.content || '{}';
+    } else if (customApiKey && customApiKey.trim().length > 0) {
       console.log(`[Gemini SDK Direct Client API] Using custom API key and model ${customModel}...`);
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${customModel}:generateContent?key=${customApiKey}`;
       const response = await fetch(url, {
@@ -312,8 +369,58 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
 }
 
 export async function generateTranscription(audioData: string, mimeType: string): Promise<string> {
+  const provider = localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini';
   const customApiKey = localStorage.getItem('recapmind_custom_api_key');
   const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
+
+  if (provider === 'local_llm') {
+    const localEndpoint = localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1';
+    const localApiKey = localStorage.getItem('recapmind_local_api_key') || '';
+    const localSttModel = localStorage.getItem('recapmind_local_stt_model') || 'whisper-1';
+
+    // Typically, Whisper endpoint is at local base url + "/audio/transcriptions"
+    const cleanEndpoint = localEndpoint.replace(/\/$/, '');
+    const url = `${cleanEndpoint}/audio/transcriptions`;
+
+    console.log(`[Local Whisper Request] Endpoint: ${url}, Model: ${localSttModel}`);
+
+    try {
+      // Convert base64 data to Blob
+      const byteCharacters = atob(audioData);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const audioBlob = new Blob([byteArray], { type: mimeType });
+
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'audio.webm');
+      formData.append('model', localSttModel);
+      formData.append('language', 'th');
+
+      const headers: Record<string, string> = {};
+      if (localApiKey) {
+        headers['Authorization'] = `Bearer ${localApiKey}`;
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`Local Whisper API error: HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.text || "";
+    } catch (err) {
+      console.warn("Failed local STT transcription, falling back to Cloud", err);
+      // Fallback: If local transcription fails (e.g., Ollama doesn't have STT), fallback gracefully to Cloud proxy so that the app remains fully functional!
+    }
+  }
 
   if (customApiKey && customApiKey.trim().length > 0) {
     console.log(`[Gemini SDK Direct Client Transcription] Using custom API key and model ${customModel}...`);

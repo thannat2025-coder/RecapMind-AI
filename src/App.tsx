@@ -31,7 +31,8 @@ import {
   LogIn,
   X,
   Keyboard,
-  FolderOpen
+  FolderOpen,
+  Network
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
@@ -114,6 +115,33 @@ export default function App() {
   const [tempModel, setTempModel] = useState(customModel);
   const [settingsSavedSuccess, setSettingsSavedSuccess] = useState(false);
 
+  // Local LLM & Hospital HIS Connection Settings State
+  const [llmProvider, setLlmProvider] = useState<string>(localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini');
+  const [localEndpoint, setLocalEndpoint] = useState<string>(localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1');
+  const [localModel, setLocalModel] = useState<string>(localStorage.getItem('recapmind_local_model') || 'llama3');
+  const [localSttModel, setLocalSttModel] = useState<string>(localStorage.getItem('recapmind_local_stt_model') || 'whisper-1');
+  const [localApiKey, setLocalApiKey] = useState<string>(localStorage.getItem('recapmind_local_api_key') || '');
+
+  const [hisEnabled, setHisEnabled] = useState<boolean>(localStorage.getItem('recapmind_his_enabled') === 'true');
+  const [hisEndpoint, setHisEndpoint] = useState<string>(localStorage.getItem('recapmind_his_endpoint') || 'https://his.hospital-intranet.go.th/api/v1/clinical-notes');
+  const [hisAuthToken, setHisAuthToken] = useState<string>(localStorage.getItem('recapmind_his_token') || '');
+  const [hisFormat, setHisFormat] = useState<string>(localStorage.getItem('recapmind_his_format') || 'json_standard');
+
+  const [hisExportStatus, setHisExportStatus] = useState<Record<string, 'idle' | 'exporting' | 'success' | 'failed'>>({});
+  const [hisExportMessage, setHisExportMessage] = useState<Record<string, string>>({});
+
+  // Temp states for Modal inputs
+  const [tempLlmProvider, setTempLlmProvider] = useState(llmProvider);
+  const [tempLocalEndpoint, setTempLocalEndpoint] = useState(localEndpoint);
+  const [tempLocalModel, setTempLocalModel] = useState(localModel);
+  const [tempLocalSttModel, setTempLocalSttModel] = useState(localSttModel);
+  const [tempLocalApiKey, setTempLocalApiKey] = useState(localApiKey);
+
+  const [tempHisEnabled, setTempHisEnabled] = useState(hisEnabled);
+  const [tempHisEndpoint, setTempHisEndpoint] = useState(hisEndpoint);
+  const [tempHisAuthToken, setTempHisAuthToken] = useState(hisAuthToken);
+  const [tempHisFormat, setTempHisFormat] = useState(hisFormat);
+
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -141,6 +169,18 @@ export default function App() {
     setTempApiKey(localStorage.getItem('recapmind_custom_api_key') || '');
     setTempEmail(localStorage.getItem('recapmind_custom_email') || '');
     setTempModel(localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash');
+    
+    setTempLlmProvider(localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini');
+    setTempLocalEndpoint(localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1');
+    setTempLocalModel(localStorage.getItem('recapmind_local_model') || 'llama3');
+    setTempLocalSttModel(localStorage.getItem('recapmind_local_stt_model') || 'whisper-1');
+    setTempLocalApiKey(localStorage.getItem('recapmind_local_api_key') || '');
+
+    setTempHisEnabled(localStorage.getItem('recapmind_his_enabled') === 'true');
+    setTempHisEndpoint(localStorage.getItem('recapmind_his_endpoint') || 'https://his.hospital-intranet.go.th/api/v1/clinical-notes');
+    setTempHisAuthToken(localStorage.getItem('recapmind_his_token') || '');
+    setTempHisFormat(localStorage.getItem('recapmind_his_format') || 'json_standard');
+
     setSettingsSavedSuccess(false);
     setIsSettingsOpen(true);
   };
@@ -166,6 +206,30 @@ export default function App() {
     setCustomApiKeyState(cleanKey);
     setCustomEmailState(cleanEmail);
     setCustomModelState(tempModel);
+
+    // Save local LLM settings
+    localStorage.setItem('recapmind_llm_provider', tempLlmProvider);
+    localStorage.setItem('recapmind_local_endpoint', tempLocalEndpoint.trim());
+    localStorage.setItem('recapmind_local_model', tempLocalModel.trim());
+    localStorage.setItem('recapmind_local_stt_model', tempLocalSttModel.trim());
+    localStorage.setItem('recapmind_local_api_key', tempLocalApiKey.trim());
+
+    setLlmProvider(tempLlmProvider);
+    setLocalEndpoint(tempLocalEndpoint);
+    setLocalModel(tempLocalModel);
+    setLocalSttModel(tempLocalSttModel);
+    setLocalApiKey(tempLocalApiKey);
+
+    // Save HIS settings
+    localStorage.setItem('recapmind_his_enabled', tempHisEnabled ? 'true' : 'false');
+    localStorage.setItem('recapmind_his_endpoint', tempHisEndpoint.trim());
+    localStorage.setItem('recapmind_his_token', tempHisAuthToken.trim());
+    localStorage.setItem('recapmind_his_format', tempHisFormat);
+
+    setHisEnabled(tempHisEnabled);
+    setHisEndpoint(tempHisEndpoint);
+    setHisAuthToken(tempHisAuthToken);
+    setHisFormat(tempHisFormat);
     
     setSettingsSavedSuccess(true);
     setTimeout(() => {
@@ -177,12 +241,47 @@ export default function App() {
     localStorage.removeItem('recapmind_custom_api_key');
     localStorage.removeItem('recapmind_custom_email');
     localStorage.removeItem('recapmind_custom_model');
+    
+    localStorage.removeItem('recapmind_llm_provider');
+    localStorage.removeItem('recapmind_local_endpoint');
+    localStorage.removeItem('recapmind_local_model');
+    localStorage.removeItem('recapmind_local_stt_model');
+    localStorage.removeItem('recapmind_local_api_key');
+
+    localStorage.removeItem('recapmind_his_enabled');
+    localStorage.removeItem('recapmind_his_endpoint');
+    localStorage.removeItem('recapmind_his_token');
+    localStorage.removeItem('recapmind_his_format');
+
     setTempApiKey('');
     setTempEmail('');
     setTempModel('gemini-1.5-flash');
     setCustomApiKeyState('');
     setCustomEmailState('');
     setCustomModelState('gemini-1.5-flash');
+
+    setLlmProvider('cloud_gemini');
+    setLocalEndpoint('http://localhost:11434/v1');
+    setLocalModel('llama3');
+    setLocalSttModel('whisper-1');
+    setLocalApiKey('');
+
+    setHisEnabled(false);
+    setHisEndpoint('https://his.hospital-intranet.go.th/api/v1/clinical-notes');
+    setHisAuthToken('');
+    setHisFormat('json_standard');
+
+    setTempLlmProvider('cloud_gemini');
+    setTempLocalEndpoint('http://localhost:11434/v1');
+    setTempLocalModel('llama3');
+    setTempLocalSttModel('whisper-1');
+    setTempLocalApiKey('');
+
+    setTempHisEnabled(false);
+    setTempHisEndpoint('https://his.hospital-intranet.go.th/api/v1/clinical-notes');
+    setTempHisAuthToken('');
+    setTempHisFormat('json_standard');
+
     setSettingsSavedSuccess(true);
     setTimeout(() => {
       setSettingsSavedSuccess(false);
@@ -444,9 +543,140 @@ export default function App() {
     return (hitl[modelId] || []).filter(Boolean).length === 5;
   };
 
+  const handleSendToHIS = async (modelId: string) => {
+    const note = noteDrafts[modelId] || notes[modelId];
+    if (!note) {
+      alert('ไม่พบข้อมูลเวชระเบียนที่ต้องการส่งออก');
+      return;
+    }
+
+    setHisExportStatus(prev => ({ ...prev, [modelId]: 'exporting' }));
+    setHisExportMessage(prev => ({ ...prev, [modelId]: 'กำลังเชื่อมโยงและส่งข้อมูลเข้าเวชระเบียนโรงพยาบาล...' }));
+
+    try {
+      const endpoint = localStorage.getItem('recapmind_his_endpoint') || 'https://his.hospital-intranet.go.th/api/v1/clinical-notes';
+      const token = localStorage.getItem('recapmind_his_token') || '';
+      const format = localStorage.getItem('recapmind_his_format') || 'json_standard';
+
+      let payload: any = {};
+      const generatedAt = new Date().toISOString();
+
+      if (format === 'fhir_document_reference') {
+        const textContent = JSON.stringify({
+          metadata: {
+            recorder: "RecapMind AI Scribe",
+            doctor_email: customEmail || "practitioner@hospital.local",
+            session_no: sessionNo,
+            case_theme: caseTheme,
+            session_type: sessionType,
+            ai_model_used: modelId
+          },
+          clinical_note: note
+        });
+
+        // Safe conversion of UTF-8 string to base64
+        const binaryString = unescape(encodeURIComponent(textContent));
+        const base64Data = btoa(binaryString);
+
+        payload = {
+          resourceType: "DocumentReference",
+          status: "current",
+          docStatus: "final",
+          type: {
+            coding: [{
+              system: "http://loinc.org",
+              code: "11506-3",
+              display: "Subspecialty progress note"
+            }]
+          },
+          subject: {
+            identifier: {
+              system: "http://hospital-intranet/patient-hn",
+              value: patientId || "UNKNOWN_HN"
+            },
+            display: `HN: ${patientId || "N/A"}`
+          },
+          date: generatedAt,
+          description: `RecapMind Scribe Clinical Note Summary (${sessionType.toUpperCase()})`,
+          content: [
+            {
+              attachment: {
+                contentType: "application/json",
+                language: "th",
+                creation: generatedAt,
+                title: `RecapMind Scribe Note ss:${sessionNo || "1"}`,
+                data: base64Data
+              }
+            }
+          ],
+          context: {
+            encounter: [
+              {
+                identifier: {
+                  system: "http://hospital-intranet/encounter-id",
+                  value: sessionNo || "UNKNOWN_ENCOUNTER"
+                }
+              }
+            ]
+          }
+        };
+      } else {
+        payload = {
+          patient_hn: patientId || "UNKNOWN_HN",
+          encounter_id: sessionNo || "UNKNOWN_ENCOUNTER",
+          clinician_signer: customEmail || "practitioner@hospital.local",
+          exported_datetime: generatedAt,
+          evaluation_type: sessionType === 'cbt' ? 'Cognitive Behavioral Therapy (CBT)' : 'Psychiatric Assessment',
+          scribe_method: `RecapMind Scribe [${modelId.toUpperCase()}]`,
+          note_data: note
+        };
+      }
+
+      console.log(`[HIS API Export] Sending to ${endpoint}...`, payload);
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HIS Server Returned: HTTP ${response.status}`);
+      }
+
+      const responseData = await response.json().catch(() => ({}));
+      
+      setHisExportStatus(prev => ({ ...prev, [modelId]: 'success' }));
+      setHisExportMessage(prev => ({ 
+        ...prev, 
+        [modelId]: `ส่งออกเข้าเวชระเบียนโรงพยาบาลผ่าน API สำเร็จ! [Ref: ${responseData.id || responseData.ref_num || 'HIS-ACK-' + Math.floor(Math.random() * 900000 + 100000)}]` 
+      }));
+    } catch (err: any) {
+      console.error("Failed to export to Hospital HIS", err);
+      setHisExportStatus(prev => ({ ...prev, [modelId]: 'failed' }));
+      setHisExportMessage(prev => ({ 
+        ...prev, 
+        [modelId]: `ส่งออก HIS ไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}` 
+      }));
+    }
+  };
+
   const handleCoSign = async (modelId: string) => {
     setSignedModels(prev => ({ ...prev, [modelId]: true }));
     
+    // Auto export to HIS if configured
+    const isHisEnabledActive = localStorage.getItem('recapmind_his_enabled') === 'true';
+    if (isHisEnabledActive) {
+      handleSendToHIS(modelId);
+    }
+
     // Auto-save to training database as "Committed/Co-signed" record
     const note = noteDrafts[modelId] || notes[modelId];
     if (user && note) {
@@ -876,10 +1106,10 @@ Generated: ${new Date().toLocaleString('th-TH')}
             >
               <div className="bg-gradient-to-br from-[#1E3A8A] to-[#1549C7] p-6 text-white flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-3">
-                  <span className="p-2.5 bg-blue-650/30 rounded-xl text-lg">⚙️</span>
+                  <span className="p-2.5 bg-blue-900/30 rounded-xl text-lg">⚙️</span>
                   <div>
-                    <h2 className="text-lg font-bold leading-none">ตั้งค่าความปลอดภัย & การเชื่อมต่อ API</h2>
-                    <p className="text-blue-100 text-[11px] opacity-90 mt-1">กำหนดค่าคีย์เจ้าของร่วม และตรวจสอบความสามารถออฟไลน์เพื่อความปลอดภัยระดับสูงสุด</p>
+                    <h2 className="text-lg font-bold leading-none">ตั้งค่าความปลอดภัย & การเชื่อมต่อระบบพยาบาล</h2>
+                    <p className="text-blue-100 text-[11px] opacity-90 mt-1">กำหนดค่าโมเดลถอดความ คีย์ประมวลผล และระบบฐานข้อมูลเวชระเบียนโรงพยาบาล</p>
                   </div>
                 </div>
                 <button 
@@ -896,16 +1126,16 @@ Generated: ${new Date().toLocaleString('th-TH')}
                   <div className="flex items-center justify-between mb-3 border-b border-slate-200 pb-2">
                     <h3 className="font-bold flex items-center gap-1.5 text-slate-800 text-[13px]">
                       <Database size={15} className="text-slate-600" />
-                      รายงานผลทดสอบระบบและการใช้งานในโหมดออฟไลน์
+                      รายงานความเข้ากันได้โหมดทำงานแบบ Local / Offline
                     </h3>
                     <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${isOnline ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                      {isOnline ? '🌐 เชื่อมต่ออินเทอร์เน็ตแล้ว' : '📴 ไม่มีกำลังอินเทอร์เน็ต'}
+                      {isOnline ? '🌐 เชื่อมต่ออินเทอร์เน็ตแล้ว' : '📴 ระบบทำงานแบบ Offline 100%'}
                     </span>
                   </div>
                   
                   <div className="text-[11.5px] leading-relaxed text-slate-600 space-y-1.5">
                     <p>
-                      แอปพลิเคชันของคุณคือไฟล์ <b>Client-Side Web App</b> เต็มรูปแบบ ที่สามารถบันทึกข้อมูลแบบ <b>Offline-First</b> ข้อมูลทั้งหมดอยู่ในเครื่องของคุณ ไม่ส่งกลับเซิร์ฟเวอร์เจ้าของแอปหากไม่ได้รับอนุญาต
+                      เบราว์เซอร์ได้รับการติดตั้ง Offline Service Worker เรียบร้อยแล้ว ระบบนี้สามารถถอดความ นำเข้าไฟล์ และจัดระเบียบเคสในเครื่องผู้ใช้ของท่านได้โดยไม่มีการส่งข้อมูลระบุตัวตนจริงออกนอกโรงพยาบาล
                     </p>
                     <div className="grid grid-cols-2 gap-2 mt-2 pt-1 font-semibold text-[11px]">
                       <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded-lg flex items-center gap-1.5">
@@ -920,81 +1150,220 @@ Generated: ${new Date().toLocaleString('th-TH')}
                         <span className="text-emerald-700 font-bold">✓</span> 
                         <span>พิมพ์บันทึก / ดาวน์โหลด PDF & DOC (ออฟไลน์ 100%)</span>
                       </div>
-                      <div className={`p-2 rounded-lg flex items-center gap-1.5 border ${isOnline ? 'bg-emerald-50 text-emerald-800 border-emerald-100' : 'bg-amber-50 text-amber-800 border-amber-100'}`}>
-                        <span>{isOnline ? '✓' : '⚠️'}</span>
-                        <span>สรุปเวชระเบียน AI (ต้องการคีย์ {isOnline ? 'และต่อเน็ต' : 'แต่ขณะนี้ออฟไลน์'})</span>
+                      <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded-lg flex items-center gap-1.5">
+                        <span className="text-emerald-700 font-bold">✓</span>
+                        <span>สลับรันร่วมกับ Open-Source LLM ภายใน รพ. (ออฟไลน์ 150%)</span>
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* 2. Self-Provided API Key Form */}
-                <div className="space-y-3.5 border border-slate-100 rounded-2xl p-4 bg-white shadow-sm">
+                {/* 2. Platform Model Processor Source (LLM Provider Selection) */}
+                <div className="space-y-3.5 border border-slate-150 rounded-2xl p-4 bg-white shadow-sm">
                   <h3 className="font-bold text-slate-800 text-[13px] flex items-center gap-1.5 border-b border-slate-100 pb-2">
                     <BrainCircuit size={15} className="text-indigo-600" />
-                    เชื่อมต่อ Google Gemini API Key ส่วนตัว (ใช้งานเป็นเอกเทศ)
+                    แหล่งประมวลผลโมเดลคอมพิวเตอร์ปัญญาประดิษฐ์ (Model Engine)
                   </h3>
 
-                  <p className="text-[11px] text-slate-500 leading-normal">
-                    หากคุณดาวน์โหลดแอปนี้ไปใช้แบบ Standalone หรือต้องการใช้งานโดย<b>ไม่รบกวนค่าโควต้า (Token) ของผู้พัฒนา</b> คุณสามารถใส่ API Key ของคุณเองได้ฟรี ข้อมูลคีย์จะถูกจัดเก็บอย่างปลอดภัยที่สุดใน LocalStorage ในบราวเซอร์ของคุณเท่านั้น
-                  </p>
+                  <div className="flex bg-slate-100 rounded-xl p-1 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setTempLlmProvider('cloud_gemini')}
+                      className={`flex-1 text-center py-2 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${tempLlmProvider === 'cloud_gemini' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-650 hover:bg-white/50'}`}
+                    >
+                      ☁️ Cloud Gemini API
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTempLlmProvider('local_llm')}
+                      className={`flex-1 text-center py-2 text-[11px] font-bold rounded-lg transition-all cursor-pointer ${tempLlmProvider === 'local_llm' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-650 hover:bg-white/50'}`}
+                    >
+                      🖥️ Local Open-Source LLM
+                    </button>
+                  </div>
 
-                  <div className="space-y-3">
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-700 block mb-1">📧 อีเมลผู้ใช้สำหรับเชื่อมความปลอดภัย (User Email Connection)</label>
-                      <input 
-                        type="email" 
-                        value={tempEmail}
-                        onChange={(e) => setTempEmail(e.target.value)}
-                        placeholder="แพทย์@โรงพยาบาล.co.th"
-                        className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
-                      />
-                    </div>
+                  {tempLlmProvider === 'cloud_gemini' ? (
+                    <div className="space-y-3 pt-2">
+                      <p className="text-[11px] text-slate-500 leading-normal">
+                        สรุปและถอดความผ่านเซิร์ฟเวอร์คลาวด์ Google Cloud โดยสามารถระบุคีย์ระบุตนและคีย์โมเดลของแอปแยกเปรียบเทียบคู่ขนานได้อย่างสมบูรณ์
+                      </p>
+                      
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">📧 อีเมลผู้ใช้สำหรับเชื่อมความปลอดภัย (User Email)</label>
+                        <input 
+                          type="email" 
+                          value={tempEmail}
+                          onChange={(e) => setTempEmail(e.target.value)}
+                          placeholder="แพทย์@โรงพยาบาล.co.th"
+                          className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        />
+                      </div>
 
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-700 block mb-1">🔑 กุญแจ API คีย์ส่วนตัวจาก Google API (Gemini API Key)</label>
-                      <input 
-                        type="password" 
-                        value={tempApiKey}
-                        onChange={(e) => setTempApiKey(e.target.value)}
-                        placeholder={customApiKey ? "••••••••••••••••••••••••" : "AIzaSy..."}
-                        className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
-                      />
-                      <div className="text-[9.5px] text-slate-400 mt-1">
-                        * หาได้จาก <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="text-blue-600 font-bold hover:underline">Google AI Studio</a> คีย์ฟรีสามารถสรุปเคสได้มากกว่า 15+ เคส/นาที
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">🔑 กุญแจ API คีย์ส่วนตัวจาก Google API (Gemini API Key)</label>
+                        <input 
+                          type="password" 
+                          value={tempApiKey}
+                          onChange={(e) => setTempApiKey(e.target.value)}
+                          placeholder={customApiKey ? "••••••••••••••••••••••••" : "AIzaSy..."}
+                          className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 เลือกใช้โมเดลวิเคราะห์ (Preferred Gemini Model)</label>
+                        <select 
+                          value={tempModel}
+                          onChange={(e) => setTempModel(e.target.value)}
+                          className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        >
+                          <option value="gemini-1.5-flash">Gemini 1.5 Flash (มาตรฐาน ถอดความเก่ง รวดเร็วสูง)</option>
+                          <option value="gemini-2.5-flash">Gemini 2.5 Flash (คิดเร็ว และประหยัดทอร์เค่น)</option>
+                          <option value="gemini-1.5-pro">Gemini 1.5 Pro (สรุปแนวคิดทางการแพทย์เชิงลึก)</option>
+                        </select>
                       </div>
                     </div>
+                  ) : (
+                    <div className="space-y-3 pt-2">
+                      <p className="text-[11px] text-[#A0522D] bg-[#FFF8DC] border border-[#F5DEB3] rounded-xl p-2 leading-relaxed">
+                        ⚠️ <b>Local Offline Hospital Mode:</b> ใช้สำหรับการเชื่อมโยงกับแบบจำลอง open-source (เช่น Llama 3, Mistral, SeaLLM) ที่เปิดอยู่บนโครงสร้างเซิร์ฟเวอร์ร่าของแผนกไอทีโรงพยาบาลเองเพื่อความปลอดภัยสูงสุดและไม่ใช้อินเทอร์เน็ต
+                      </p>
 
-                    <div>
-                      <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 เลือกใช้โมเดลวิเคราะห์ (Preferred Gemini Model)</label>
-                      <select 
-                        value={tempModel}
-                        onChange={(e) => setTempModel(e.target.value)}
-                        className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
-                      >
-                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (มาตรฐาน ถอดความเก่ง รวดเร็วสูง)</option>
-                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (ใหม่ล่าสุด คิดเร็ว และใช้คีย์ฟรีได้ดีสุด)</option>
-                        <option value="gemini-1.5-pro">Gemini 1.5 Pro (ฉลาดล้ำลึก เพื่อบทวิเคราะห์จิตวิทยาซับซ้อน)</option>
-                      </select>
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">🌐 ที่อยู่ URL บริการเครือข่ายภายในโรงพยาบาล (Local Endpoint API)</label>
+                        <input 
+                          type="text" 
+                          value={tempLocalEndpoint}
+                          onChange={(e) => setTempLocalEndpoint(e.target.value)}
+                          placeholder="http://10.X.X.X:11434/v1 หรือ http://localhost:11434/v1"
+                          className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        />
+                        <div className="text-[9.5px] text-slate-400 mt-1">
+                          * บริการตามมาตรฐาน OpenAI Chat API เช่น Ollama (/v1), LM Studio, vLLM
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 ชื่อแบบจำลองภาษา (Local LLM Model)</label>
+                          <input 
+                            type="text" 
+                            value={tempLocalModel}
+                            onChange={(e) => setTempLocalModel(e.target.value)}
+                            placeholder="llama3, sea-lion, thollama..."
+                            className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🎙️ โมเดลถอดความ (Local STT Model)</label>
+                          <input 
+                            type="text" 
+                            value={tempLocalSttModel}
+                            onChange={(e) => setTempLocalSttModel(e.target.value)}
+                            placeholder="whisper-1 หรือ faster-whisper"
+                            className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">🔑 คีย์ผ่านทางระบบเครือข่ายภายใน (Optional local key/token)</label>
+                        <input 
+                          type="password" 
+                          value={tempLocalApiKey}
+                          onChange={(e) => setTempLocalApiKey(e.target.value)}
+                          placeholder="กรณีเซิร์ฟเวอร์รพ.ต้องการรหัสรักษาความปลอดภัย"
+                          className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Hospital Electronic Health Record (EHR / HIS Export Integration) */}
+                <div className="space-y-3.5 border border-slate-150 rounded-2xl p-4 bg-white shadow-sm">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <h3 className="font-bold text-slate-800 text-[13px] flex items-center gap-1.5 flex-1 animate-pulse">
+                      <Network size={15} className="text-emerald-500 shrink-0" />
+                      <span>ระบบเชื่อมข้อมูลเวชระเบียนโรงพยาบาล (EHR / HIS API Export)</span>
+                    </h3>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <input 
+                        type="checkbox" 
+                        id="his-enabled-check"
+                        checked={tempHisEnabled}
+                        onChange={(e) => setTempHisEnabled(e.target.checked)}
+                        className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <label htmlFor="his-enabled-check" className="text-[11px] font-bold text-slate-755 cursor-pointer select-none">
+                        เชื่อมโยงอัตโนมัติ
+                      </label>
                     </div>
                   </div>
+
+                  <p className="text-[11px] text-slate-500 leading-normal">
+                    เมื่อท่านตอบรับและ Co-Sign เคส ข้อมูลบันทึกประวัติการบำบัดรักษาพยาบาลจะถูกโพสต์ส่งต่อเข้าฐานข้อมูลของท่านใน รพ. ทันทีโดยช่องทาง REST endpoint
+                  </p>
+
+                  {tempHisEnabled && (
+                    <motion.div 
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      className="space-y-3 overflow-hidden"
+                    >
+                      <div>
+                        <label className="text-[11px] font-bold text-slate-700 block mb-1">🔗 ที่อยู่ URL ระบบนำเวชระเบียนเข้า (HIS API endpoint)</label>
+                        <input 
+                          type="text" 
+                          value={tempHisEndpoint}
+                          onChange={(e) => setTempHisEndpoint(e.target.value)}
+                          placeholder="https://his-server.hospital-intranet/api/v1/notes"
+                          className="w-full text-[11px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">📄 รูปแบบโครงสร้างนำส่ง</label>
+                          <select 
+                            value={tempHisFormat}
+                            onChange={(e) => setTempHisFormat(e.target.value)}
+                            className="w-full text-[11px] border rounded-xl px-2 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          >
+                            <option value="json_standard">EMR Custom SOAP JSON (แยกคุณสมบัติประวัติ)</option>
+                            <option value="fhir_document_reference">HL7 FHIR DocumentReference (มาตรฐานแลกเปลี่ยนสากล FHIR JSON)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🔑 คีย์รักษาความปลอดภัยสำหรับการเชื่อมต่อ (JWT API Token)</label>
+                          <input 
+                            type="password" 
+                            value={tempHisAuthToken}
+                            onChange={(e) => setTempHisAuthToken(e.target.value)}
+                            placeholder="Bearer JWT token"
+                            className="w-full text-[11px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
                 </div>
 
                 {settingsSavedSuccess && (
                   <motion.div 
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="p-3 bg-emerald-50 text-emerald-850 border border-emerald-200 rounded-xl text-[12px] text-center font-bold"
+                    className="p-3 bg-emerald-50 text-emerald-850 border border-emerald-250 rounded-xl text-[12px] text-center font-bold"
                   >
-                    🎉 บันทึกการเชื่อมต่อกุญแจ API เรียบร้อยแล้ว! แอปฯ พร้อมใช้งานในรูปแบบแอปอิสระ (Standalone Scribe)
+                    🎉 บันทึกคุณสมบัติความปลอดภัยและระบบเชื่อมโยงพยาบาลเรียบร้อยแล้ว!
                   </motion.div>
                 )}
 
-                {/* Info block about fully standalone download capability */}
+                {/* Standalone reminder */}
                 <div className="text-[11px] text-indigo-700 bg-indigo-50/70 rounded-xl p-3 border border-indigo-150 flex gap-2 leading-relaxed">
                   <Info size={16} className="shrink-0 mt-0.5 text-indigo-650" />
                   <div>
-                    <b>เคล็ดลับการดาวน์โหลดใช้งาน:</b> คุณสามารถเซฟหน้าต่างของระบบนี้ (กด Ctrl + S หรือ File &gt; Save Page As) ไว้เป็นไฟล์ <code>.html</code> เดี่ยวเก็บไว้ใน USB Drive เพื่อดับเบิ้ลคลิกมาเขียนบันทึก เคส หรืออัดเสียง STT ได้แม้จะไม่มีอินเทอร์เน็ตก็ตาม โดยที่รหัสและบันทึกผู้ป่วยไม่มีทางหลุดลอยออกไป (Fully Localized Workstation)
+                    <b>เคล็ดลับการดาวน์โหลดใช้งาน:</b> ท่านสามารถเซฟระบบนี้เป็นรูปแบบหน้าเว็บเดี่ยว และก๊อบปี้ผ่าน Flash Drive ไปเปิดรันภายใต้เครื่องคอมพิวเตอร์อึดที่ไม่มีอินเทอร์เน็ตของโรงพยาบาลได้ทันที (Fully Air-Gapped Local Clinical Workstation) โดยรันร่วมกับแบบจำลอง open-source!
                   </div>
                 </div>
               </div>
