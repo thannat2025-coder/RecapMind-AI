@@ -192,11 +192,11 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
       }
     }
   } else {
-    // Psychiatric Session Prompts
+    // Psychiatric Session Notes
     responseSchema = `{
       "history": "ประวัติเรื่องที่ผู้ป่วยและแพทย์พูดคุยกัน ทบทวนการรักษาที่ผ่านมา เรื่องราวที่ซักประวัติ",
       "mental_status": "Mental Status Examination มาตรฐานทางจิตเวชสากล",
-      "diagnosis": "การวินิจฉัยตาม DSM-5 and ICD-11 พร้อม code",
+      "diagnosis": "การวินิจฉัยตาม DSM-5 และ ICD-11 พร้อม code",
       "treatment_plan": "รูปแบบการรักษาที่ได้รับจากการพูดคุย พร้อมทั้งการนัดหมาย"
     }`;
     
@@ -214,30 +214,67 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
 
   const prompt = `Case Theme/Context: ${caseTheme || 'General Mental Health'}\n\nSession Transcript (De-identified):\n\n${transcript}\n\n${humanExamplesText}\n\nสรุปเป็น JSON format ตามโครงสร้างกำหนด:\n${responseSchema}`;
 
+  const customApiKey = localStorage.getItem('recapmind_custom_api_key');
+  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
+
   try {
-    const response = await fetch('/api/generate-note', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt: prompt,
-        systemInstruction: systemPrompt
-      })
-    });
+    let rawText = '';
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to generate note via proxy');
+    if (customApiKey && customApiKey.trim().length > 0) {
+      console.log(`[Gemini SDK Direct Client API] Using custom API key and model ${customModel}...`);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${customModel}:generateContent?key=${customApiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }]
+            }
+          ],
+          systemInstruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          generationConfig: {
+            responseMimeType: "application/json"
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `Failed with Google Gemini API: HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    } else {
+      // Fallback: server-side API proxy
+      const response = await fetch('/api/generate-note', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          systemInstruction: systemPrompt
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to generate note via server proxy');
+      }
+
+      const data = await response.json();
+      rawText = data.text || "{}";
     }
-
-    const data = await response.json();
-    const rawText = data.text || "{}";
     
     // Robustly find and parse the JSON object
     let cleanedText = rawText.trim();
     
-    // Remove potential markdown blocks if present (though responseMimeType: "application/json" should prevent this)
     if (cleanedText.startsWith('```')) {
       cleanedText = cleanedText.replace(/^```(?:json)?/, '').replace(/```$/, '').trim();
     }
@@ -245,12 +282,9 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
     try {
       return JSON.parse(cleanedText) as ClinicalNote;
     } catch (parseError) {
-      // If parsing fails, it might be due to trailing noise (like an extra closing brace)
-      // Attempt to find the first valid JSON object starting from the first '{'
       const firstBrace = cleanedText.indexOf('{');
       if (firstBrace !== -1) {
         const potentialJson = cleanedText.substring(firstBrace);
-        // Find all indices of '}' and try to parse the substring
         const closingBraceIndices: number[] = [];
         for (let i = 0; i < potentialJson.length; i++) {
           if (potentialJson[i] === '}') {
@@ -258,7 +292,6 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
           }
         }
 
-        // Try candidate strings from longest to shortest
         for (let i = closingBraceIndices.length - 1; i >= 0; i--) {
           const candidate = potentialJson.substring(0, closingBraceIndices[i] + 1);
           try {
@@ -275,5 +308,86 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
   } catch (error) {
     console.error(`Error generating clinical note for ${modelType}:`, error);
     throw error;
+  }
+}
+
+export async function generateTranscription(audioData: string, mimeType: string): Promise<string> {
+  const customApiKey = localStorage.getItem('recapmind_custom_api_key');
+  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
+
+  if (customApiKey && customApiKey.trim().length > 0) {
+    console.log(`[Gemini SDK Direct Client Transcription] Using custom API key and model ${customModel}...`);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${customModel}:generateContent?key=${customApiKey}`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: mimeType,
+                  data: audioData
+                }
+              },
+              {
+                text: "กรุณาถอดคำพูดจากการอัดเสียงภาษาไทยนี้อย่างละเอียดและครบถ้วนที่สุด โดยเขียนออกมาเป็นบทสนทนา (Thai Transcription) ให้สมบูรณ์ที่สุด ห้ามละและห้ามสรุปความเด็ดขาด หากมีการหารือหรือประเมินในบทสนทนาให้ระบุทั้งหมดให้ตรงตามจริง และไม่ต้องพิมพ์ปูบทนำหรือคำลงท้ายใดๆ"
+              }
+            ]
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error?.message || `Transcription failed with Custom API Key (HTTP ${response.status})`);
+    }
+
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  } else {
+    // Calling the standard proxy
+    const response = await fetch('/api/transcribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        audioData,
+        mimeType
+      })
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'ถอดความสัญญาณเสียงล้มเหลว';
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+          if (errorData.details) {
+            errorMessage += ` (${errorData.details})`;
+          }
+        } catch (e) {
+          // ignore
+        }
+      } else {
+        const tempText = await response.text();
+        if (response.status === 413 || tempText.includes('too large') || tempText.includes('Payload Too Large')) {
+          errorMessage = 'ขนาดข้อมูลเสียงส่วนนี้ใหญ่เกินพิกัดสุทธิของเซิร์ฟเวอร์';
+        } else {
+          errorMessage = `เซิร์ฟเวอร์ตอบกลับผิดพลาด (${response.status} ${response.statusText})`;
+        }
+      }
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data.text || "";
   }
 }

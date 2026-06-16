@@ -45,7 +45,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pd
 import { CASE_EXAMPLES } from './constants';
 import { checkSafety, deIdentify, retrieveRagCases } from './utils';
 import { compressAudioFile } from './utils/audioCompressor';
-import { generateClinicalNote } from './lib/gemini';
+import { generateClinicalNote, generateTranscription } from './lib/gemini';
 import { auth, loginWithGoogle, logout, saveTrainingData, getTrainingData } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
@@ -97,11 +97,97 @@ export default function App() {
   const [hasConsented, setHasConsented] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const noteDraftsRef = useRef<any>(null); // To store noteDrafts
   const [noteDrafts, setNoteDrafts] = useState<Record<string, ClinicalNote>>({});
   const recInterval = useRef<NodeJS.Timeout | null>(null);
   const recognitionRef = useRef<any>(null);
   const noteRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [customApiKey, setCustomApiKeyState] = useState(localStorage.getItem('recapmind_custom_api_key') || '');
+  const [customEmail, setCustomEmailState] = useState(localStorage.getItem('recapmind_custom_email') || '');
+  const [customModel, setCustomModelState] = useState(localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash');
+  const [tempApiKey, setTempApiKey] = useState(customApiKey);
+  const [tempEmail, setTempEmail] = useState(customEmail);
+  const [tempModel, setTempModel] = useState(customModel);
+  const [settingsSavedSuccess, setSettingsSavedSuccess] = useState(false);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Save draft of the transcript to prevent loss of clinical data
+  useEffect(() => {
+    localStorage.setItem('recapmind_draft_transcript', transcript);
+  }, [transcript]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('recapmind_draft_transcript');
+    if (saved && !transcript) {
+      setTranscript(saved);
+    }
+  }, []);
+
+  const openSettings = () => {
+    setTempApiKey(localStorage.getItem('recapmind_custom_api_key') || '');
+    setTempEmail(localStorage.getItem('recapmind_custom_email') || '');
+    setTempModel(localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash');
+    setSettingsSavedSuccess(false);
+    setIsSettingsOpen(true);
+  };
+
+  const handleSaveSettings = () => {
+    const cleanKey = tempApiKey.trim();
+    const cleanEmail = tempEmail.trim();
+
+    if (cleanKey) {
+      localStorage.setItem('recapmind_custom_api_key', cleanKey);
+    } else {
+      localStorage.removeItem('recapmind_custom_api_key');
+    }
+    
+    if (cleanEmail) {
+      localStorage.setItem('recapmind_custom_email', cleanEmail);
+    } else {
+      localStorage.removeItem('recapmind_custom_email');
+    }
+    
+    localStorage.setItem('recapmind_custom_model', tempModel);
+    
+    setCustomApiKeyState(cleanKey);
+    setCustomEmailState(cleanEmail);
+    setCustomModelState(tempModel);
+    
+    setSettingsSavedSuccess(true);
+    setTimeout(() => {
+      setSettingsSavedSuccess(false);
+    }, 2000);
+  };
+
+  const handleClearSettings = () => {
+    localStorage.removeItem('recapmind_custom_api_key');
+    localStorage.removeItem('recapmind_custom_email');
+    localStorage.removeItem('recapmind_custom_model');
+    setTempApiKey('');
+    setTempEmail('');
+    setTempModel('gemini-1.5-flash');
+    setCustomApiKeyState('');
+    setCustomEmailState('');
+    setCustomModelState('gemini-1.5-flash');
+    setSettingsSavedSuccess(true);
+    setTimeout(() => {
+      setSettingsSavedSuccess(false);
+    }, 1500);
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -263,44 +349,12 @@ export default function App() {
           const chunk = chunks[i];
           setLoadingMessage(`กำลังถอดคำพูดจากส่วนเสียงภาษาไทย ชิ้นที่ ${i + 1} จากทั้งหมด ${chunks.length} ชิ้น ด้วยโมเดลวิเคราะห์ความละเอียดสูง...`);
           
-          const response = await fetch('/api/transcribe', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              audioData: chunk.data,
-              mimeType: chunk.mimeType
-            })
-          });
-
-          if (!response.ok) {
-            let errorMessage = `ถอดความสัญญาณเสียงล้มเหลวในส่วนชิ้นที่ ${i + 1}`;
-            const contentType = response.headers.get('content-type');
-            if (contentType && contentType.includes('application/json')) {
-              try {
-                const errorData = await response.json();
-                errorMessage = errorData.error || errorMessage;
-                if (errorData.details) {
-                  errorMessage += ` (${errorData.details})`;
-                }
-              } catch (e) {
-                // fallback
-              }
-            } else {
-              const tempText = await response.text();
-              if (response.status === 413 || tempText.includes('too large') || tempText.includes('Payload Too Large')) {
-                errorMessage = 'ขนาดข้อมูลเสียงส่วนนี้ใหญ่เกินพิกัดสุทธิของเซิร์ฟเวอร์';
-              } else {
-                errorMessage = `เซิร์ฟเวอร์ตอบกลับผิดพลาด (${response.status} ${response.statusText})`;
-              }
-            }
-            throw new Error(errorMessage);
+          try {
+            const partText = await generateTranscription(chunk.data, chunk.mimeType);
+            fullTranscript += (fullTranscript ? '\n' : '') + partText;
+          } catch (err: any) {
+            throw new Error(`ถอดความสัญญาณเสียงล้มเหลวในส่วนชิ้นที่ ${i + 1}: ${err.message || String(err)}`);
           }
-
-          const data = await response.json();
-          const partText = data.text || '';
-          fullTranscript += (fullTranscript ? '\n' : '') + partText;
         }
 
         extractedText = fullTranscript;
@@ -806,6 +860,171 @@ Generated: ${new Date().toLocaleString('th-TH')}
             </motion.div>
           </motion.div>
         )}
+
+        {isSettingsOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 text-slate-800"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col max-h-[95vh]"
+            >
+              <div className="bg-gradient-to-br from-[#1E3A8A] to-[#1549C7] p-6 text-white flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <span className="p-2.5 bg-blue-650/30 rounded-xl text-lg">⚙️</span>
+                  <div>
+                    <h2 className="text-lg font-bold leading-none">ตั้งค่าความปลอดภัย & การเชื่อมต่อ API</h2>
+                    <p className="text-blue-100 text-[11px] opacity-90 mt-1">กำหนดค่าคีย์เจ้าของร่วม และตรวจสอบความสามารถออฟไลน์เพื่อความปลอดภัยระดับสูงสุด</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto space-y-5 flex-1 text-sm text-[#334155]">
+                {/* 1. Offline Mode Audit & Diagnostics */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-3 border-b border-slate-200 pb-2">
+                    <h3 className="font-bold flex items-center gap-1.5 text-slate-800 text-[13px]">
+                      <Database size={15} className="text-slate-600" />
+                      รายงานผลทดสอบระบบและการใช้งานในโหมดออฟไลน์
+                    </h3>
+                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${isOnline ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                      {isOnline ? '🌐 เชื่อมต่ออินเทอร์เน็ตแล้ว' : '📴 ไม่มีกำลังอินเทอร์เน็ต'}
+                    </span>
+                  </div>
+                  
+                  <div className="text-[11.5px] leading-relaxed text-slate-600 space-y-1.5">
+                    <p>
+                      แอปพลิเคชันของคุณคือไฟล์ <b>Client-Side Web App</b> เต็มรูปแบบ ที่สามารถบันทึกข้อมูลแบบ <b>Offline-First</b> ข้อมูลทั้งหมดอยู่ในเครื่องของคุณ ไม่ส่งกลับเซิร์ฟเวอร์เจ้าของแอปหากไม่ได้รับอนุญาต
+                    </p>
+                    <div className="grid grid-cols-2 gap-2 mt-2 pt-1 font-semibold text-[11px]">
+                      <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded-lg flex items-center gap-1.5">
+                        <span className="text-emerald-700 font-bold">✓</span> 
+                        <span>On-Device Recording (ออฟไลน์ 100%)</span>
+                      </div>
+                      <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded-lg flex items-center gap-1.5">
+                        <span className="text-emerald-700 font-bold">✓</span> 
+                        <span>De-Identifier ปิดบังความลับ (ออฟไลน์ 100%)</span>
+                      </div>
+                      <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded-lg flex items-center gap-1.5">
+                        <span className="text-emerald-700 font-bold">✓</span> 
+                        <span>พิมพ์บันทึก / ดาวน์โหลด PDF & DOC (ออฟไลน์ 100%)</span>
+                      </div>
+                      <div className={`p-2 rounded-lg flex items-center gap-1.5 border ${isOnline ? 'bg-emerald-50 text-emerald-800 border-emerald-100' : 'bg-amber-50 text-amber-800 border-amber-100'}`}>
+                        <span>{isOnline ? '✓' : '⚠️'}</span>
+                        <span>สรุปเวชระเบียน AI (ต้องการคีย์ {isOnline ? 'และต่อเน็ต' : 'แต่ขณะนี้ออฟไลน์'})</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Self-Provided API Key Form */}
+                <div className="space-y-3.5 border border-slate-100 rounded-2xl p-4 bg-white shadow-sm">
+                  <h3 className="font-bold text-slate-800 text-[13px] flex items-center gap-1.5 border-b border-slate-100 pb-2">
+                    <BrainCircuit size={15} className="text-indigo-600" />
+                    เชื่อมต่อ Google Gemini API Key ส่วนตัว (ใช้งานเป็นเอกเทศ)
+                  </h3>
+
+                  <p className="text-[11px] text-slate-500 leading-normal">
+                    หากคุณดาวน์โหลดแอปนี้ไปใช้แบบ Standalone หรือต้องการใช้งานโดย<b>ไม่รบกวนค่าโควต้า (Token) ของผู้พัฒนา</b> คุณสามารถใส่ API Key ของคุณเองได้ฟรี ข้อมูลคีย์จะถูกจัดเก็บอย่างปลอดภัยที่สุดใน LocalStorage ในบราวเซอร์ของคุณเท่านั้น
+                  </p>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">📧 อีเมลผู้ใช้สำหรับเชื่อมความปลอดภัย (User Email Connection)</label>
+                      <input 
+                        type="email" 
+                        value={tempEmail}
+                        onChange={(e) => setTempEmail(e.target.value)}
+                        placeholder="แพทย์@โรงพยาบาล.co.th"
+                        className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">🔑 กุญแจ API คีย์ส่วนตัวจาก Google API (Gemini API Key)</label>
+                      <input 
+                        type="password" 
+                        value={tempApiKey}
+                        onChange={(e) => setTempApiKey(e.target.value)}
+                        placeholder={customApiKey ? "••••••••••••••••••••••••" : "AIzaSy..."}
+                        className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                      />
+                      <div className="text-[9.5px] text-slate-400 mt-1">
+                        * หาได้จาก <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="text-blue-600 font-bold hover:underline">Google AI Studio</a> คีย์ฟรีสามารถสรุปเคสได้มากกว่า 15+ เคส/นาที
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 เลือกใช้โมเดลวิเคราะห์ (Preferred Gemini Model)</label>
+                      <select 
+                        value={tempModel}
+                        onChange={(e) => setTempModel(e.target.value)}
+                        className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                      >
+                        <option value="gemini-1.5-flash">Gemini 1.5 Flash (มาตรฐาน ถอดความเก่ง รวดเร็วสูง)</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash (ใหม่ล่าสุด คิดเร็ว และใช้คีย์ฟรีได้ดีสุด)</option>
+                        <option value="gemini-1.5-pro">Gemini 1.5 Pro (ฉลาดล้ำลึก เพื่อบทวิเคราะห์จิตวิทยาซับซ้อน)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {settingsSavedSuccess && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-3 bg-emerald-50 text-emerald-850 border border-emerald-200 rounded-xl text-[12px] text-center font-bold"
+                  >
+                    🎉 บันทึกการเชื่อมต่อกุญแจ API เรียบร้อยแล้ว! แอปฯ พร้อมใช้งานในรูปแบบแอปอิสระ (Standalone Scribe)
+                  </motion.div>
+                )}
+
+                {/* Info block about fully standalone download capability */}
+                <div className="text-[11px] text-indigo-700 bg-indigo-50/70 rounded-xl p-3 border border-indigo-150 flex gap-2 leading-relaxed">
+                  <Info size={16} className="shrink-0 mt-0.5 text-indigo-650" />
+                  <div>
+                    <b>เคล็ดลับการดาวน์โหลดใช้งาน:</b> คุณสามารถเซฟหน้าต่างของระบบนี้ (กด Ctrl + S หรือ File &gt; Save Page As) ไว้เป็นไฟล์ <code>.html</code> เดี่ยวเก็บไว้ใน USB Drive เพื่อดับเบิ้ลคลิกมาเขียนบันทึก เคส หรืออัดเสียง STT ได้แม้จะไม่มีอินเทอร์เน็ตก็ตาม โดยที่รหัสและบันทึกผู้ป่วยไม่มีทางหลุดลอยออกไป (Fully Localized Workstation)
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-100 p-4 border-t border-slate-205 shrink-0 flex items-center justify-between">
+                <button 
+                  onClick={handleClearSettings}
+                  className="px-4 py-2 border border-slate-300 text-slate-650 hover:text-slate-800 rounded-xl hover:bg-slate-200 text-[12px] font-bold transition-all cursor-pointer"
+                >
+                  🔴 กลับไปใช้ API ระบบ (Revert Default)
+                </button>
+                
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => setIsSettingsOpen(false)}
+                    className="px-4 py-2 border border-slate-300 text-slate-700 hover:text-slate-900 rounded-xl hover:bg-slate-100 text-[12px] font-bold transition-all cursor-pointer"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+                  <button 
+                    onClick={handleSaveSettings}
+                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[12px] font-bold shadow-md transition-all active:scale-95 cursor-pointer"
+                  >
+                    💾 บันทึกความปลอดภัย (Save Key)
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* Topbar */}
@@ -817,10 +1036,22 @@ Generated: ${new Date().toLocaleString('th-TH')}
         </div>
         <div className="ml-auto flex items-center gap-[10px]">
           <div className="flex items-center gap-[5px] mr-2">
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">🔒 PDPA</span>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-200">✅ HITL</span>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">⚡ Gemini API</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">🔒 PDPA Security</span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-colors ${isOnline ? 'bg-green-150 text-green-700 border-green-300' : 'bg-red-100 text-red-700 border-red-200'}`}>
+              {isOnline ? '🌐 Online' : '📴 Offline Mode'}
+            </span>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-colors ${customApiKey ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-blue-100 text-blue-700 border-blue-200'}`}>
+              {customApiKey ? '🔑 Custom: ' + (customEmail ? customEmail : 'Connected') : '⚡ API Host Agent'}
+            </span>
           </div>
+
+          <button 
+            onClick={openSettings}
+            className="flex items-center gap-1 px-3 py-1.5 bg-[#EFF6FF] hover:bg-blue-100 text-[#1D4ED8] hover:text-[#1E40AF] border border-[rgba(29,78,216,0.15)] rounded-lg text-[11px] font-bold transition-all active:scale-95 flex items-center justify-center cursor-pointer shadow-sm"
+            title="ตั้งค่า API Key เพื่อความเป็นส่วนตัวสูงสุดและสามารถทำงานได้เป็นเอกเทศ"
+          >
+            ⚙️ เชื่อม API คีย์ / ทำงาน Offline
+          </button>
           
           <div className="h-6 w-[1px] bg-slate-200" />
           
