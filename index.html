@@ -4,6 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Google AI Studio App</title>
+    <script>
+      // Gracefully catch and swallow uninformative cross-origin "Script error." 
+      // or browser extension errors that trigger inside the AI Studio iframe.
+      window.onerror = function (message, url, line, column, error) {
+        const msgStr = String(message || '');
+        if (
+          msgStr.toLowerCase().includes('script error') || 
+          !url || 
+          url.indexOf(window.location.origin) === -1
+        ) {
+          console.warn('Gracefully ignored cross-origin or extension Script Error:', message, 'at', url);
+          return true; // Prevents the error from propagating to the console/UI warning overlay
+        }
+        return false;
+      };
+
+      window.addEventListener('unhandledrejection', function (event) {
+        const reason = event.reason;
+        const reasonStr = String(reason?.message || reason || '');
+        if (
+          reasonStr.toLowerCase().includes('script error') || 
+          reasonStr.toLowerCase().includes('cross-origin') ||
+          reasonStr.toLowerCase().includes('origin')
+        ) {
+          console.warn('Gracefully ignored cross-origin unhandled promise rejection:', reasonStr);
+          event.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

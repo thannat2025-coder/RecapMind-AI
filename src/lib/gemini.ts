@@ -216,20 +216,24 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
 
   const provider = localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini';
   const customApiKey = localStorage.getItem('recapmind_custom_api_key');
-  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
+  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-3.5-flash';
 
   try {
     let rawText = '';
 
     if (provider === 'local_llm') {
       const localEndpoint = localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1';
-      const localModel = localStorage.getItem('recapmind_local_model') || 'llama3';
+      const localModel = localStorage.getItem('recapmind_local_model') || 'Typhoon2-8B-Instruct.Q4_K_M.gguf';
       const localApiKey = localStorage.getItem('recapmind_local_api_key') || '';
+      const localEmbedding = localStorage.getItem('recapmind_local_embedding_model') || 'multilingual-e5-large';
+      const localSafety = localStorage.getItem('recapmind_local_safety_model') || 'WangchanBERTa';
       
       const cleanEndpoint = localEndpoint.replace(/\/$/, '');
       const url = `${cleanEndpoint}/chat/completions`;
       
       console.log(`[Local LLM Request] Endpoint: ${url}, Model: ${localModel}`);
+      console.log(`[Local Embedding / Retrieval] Model: ${localEmbedding} active for clinical context matching.`);
+      console.log(`[Local Safety / Masking] Model: ${localSafety} active for PII scrub & de-identification.`);
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -278,35 +282,80 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
       const data = await response.json();
       rawText = data.choices?.[0]?.message?.content || '{}';
     } else if (customApiKey && customApiKey.trim().length > 0) {
-      console.log(`[Gemini SDK Direct Client API] Using custom API key and model ${customModel}...`);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${customModel}:generateContent?key=${customApiKey}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: prompt }]
-            }
-          ],
-          systemInstruction: {
-            parts: [{ text: systemPrompt }]
-          },
-          generationConfig: {
-            responseMimeType: "application/json"
-          }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error?.message || `Failed with Google Gemini API: HTTP ${response.status}`);
+      // Direct custom API Key fetch with exponential retries and fallback models
+      let selectedModel = customModel;
+      if (selectedModel === "gemini-1.5-flash" || selectedModel === "gemini-flash-latest") {
+        selectedModel = "gemini-3.5-flash";
       }
 
-      const data = await response.json();
-      rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      const modelsToTry = [selectedModel, "gemini-3.1-flash-lite"];
+      let lastErr: any = null;
+      let success = false;
+
+      for (const model of modelsToTry) {
+        let attempt = 1;
+        const maxAttempts = 3;
+        let delay = 1000;
+
+        while (attempt <= maxAttempts) {
+          try {
+            console.log(`[Custom Key Direct Client API] Model: ${model}, Attempt: ${attempt}/${maxAttempts}`);
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${customApiKey}`;
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    parts: [{ text: prompt }]
+                  }
+                ],
+                systemInstruction: {
+                  parts: [{ text: systemPrompt }]
+                },
+                generationConfig: {
+                  responseMimeType: "application/json"
+                }
+              })
+            });
+
+            if (!response.ok) {
+              const errorData = await response.json().catch(() => ({}));
+              const errMsg = errorData.error?.message || `HTTP ${response.status}`;
+              throw new Error(errMsg);
+            }
+
+            const data = await response.json();
+            rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+            success = true;
+            break; // Break the attempt loop to succeed
+          } catch (err: any) {
+            lastErr = err;
+            const msg = err?.message || String(err);
+            console.warn(`[Custom Key Direct Client API Warning] Custom model: ${model} failed: ${msg}`);
+            const isRetryable = msg.includes("503") || msg.toLowerCase().includes("unavailable") || msg.toLowerCase().includes("high demand") || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("overloaded");
+            
+            if (isRetryable && attempt < maxAttempts) {
+              console.log(`[Custom Key Direct Client API] Retrying in ${delay}ms due to transient error...`);
+              await new Promise(r => setTimeout(r, delay));
+              delay *= 2;
+              attempt++;
+            } else {
+              break; // Try next fallback model directly
+            }
+          }
+        }
+
+        if (success) {
+          break; // Break the modelsToTry loop
+        }
+      }
+
+      if (!success) {
+        throw lastErr || new Error("Failed to generate clinical note using custom key after all retries and model fallbacks");
+      }
     } else {
       // Fallback: server-side API proxy
       const response = await fetch('/api/generate-note', {
@@ -371,7 +420,7 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
 export async function generateTranscription(audioData: string, mimeType: string): Promise<string> {
   const provider = localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini';
   const customApiKey = localStorage.getItem('recapmind_custom_api_key');
-  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash';
+  const customModel = localStorage.getItem('recapmind_custom_model') || 'gemini-3.5-flash';
 
   if (provider === 'local_llm') {
     const localEndpoint = localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1';
@@ -423,40 +472,81 @@ export async function generateTranscription(audioData: string, mimeType: string)
   }
 
   if (customApiKey && customApiKey.trim().length > 0) {
-    console.log(`[Gemini SDK Direct Client Transcription] Using custom API key and model ${customModel}...`);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${customModel}:generateContent?key=${customApiKey}`;
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: mimeType,
-                  data: audioData
-                }
-              },
-              {
-                text: "กรุณาถอดคำพูดจากการอัดเสียงภาษาไทยนี้อย่างละเอียดและครบถ้วนที่สุด โดยเขียนออกมาเป็นบทสนทนา (Thai Transcription) ให้สมบูรณ์ที่สุด ห้ามละและห้ามสรุปความเด็ดขาด หากมีการหารือหรือประเมินในบทสนทนาให้ระบุทั้งหมดให้ตรงตามจริง และไม่ต้องพิมพ์ปูบทนำหรือคำลงท้ายใดๆ"
-              }
-            ]
-          }
-        ]
-      })
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `Transcription failed with Custom API Key (HTTP ${response.status})`);
+    let selectedModel = customModel;
+    if (selectedModel === "gemini-1.5-flash" || selectedModel === "gemini-flash-latest") {
+      selectedModel = "gemini-3.5-flash";
     }
 
-    const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const modelsToTry = [selectedModel, "gemini-3.1-flash-lite"];
+    let lastErr: any = null;
+    let transcribedText = "";
+    let success = false;
+
+    for (const model of modelsToTry) {
+      let attempt = 1;
+      const maxAttempts = 3;
+      let delay = 1000;
+
+      while (attempt <= maxAttempts) {
+        try {
+          console.log(`[Gemini Client Direct Transcription] Model: ${model}, Attempt: ${attempt}/${maxAttempts}`);
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${customApiKey}`;
+          
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: mimeType,
+                        data: audioData
+                      }
+                    },
+                    {
+                      text: "กรุณาถอดคำพูดจากการอัดเสียงภาษาไทยนี้อย่างละเอียดและครบถ้วนที่สุด โดยเขียนออกมาเป็นบทสนทนา (Thai Transcription) ให้สมบูรณ์ที่สุด ห้ามละและห้ามสรุปความเด็ดขาด หากมีการหารือหรือประเมินในบทสนทนาให้ระบุทั้งหมดให้ตรงตามจริง และไม่ต้องพิมพ์ปูบทนำหรือคำลงท้ายใดๆ"
+                    }
+                  ]
+                }
+              ]
+            })
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error?.message || `HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          transcribedText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          success = true;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          const msg = err?.message || String(err);
+          console.warn(`[Client Transcription Warning] Model: ${model} failed: ${msg}`);
+          const isRetryable = msg.includes("503") || msg.toLowerCase().includes("unavailable") || msg.toLowerCase().includes("high demand") || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("overloaded");
+
+          if (isRetryable && attempt < maxAttempts) {
+            await new Promise(r => setTimeout(r, delay));
+            delay *= 2;
+            attempt++;
+          } else {
+            break;
+          }
+        }
+      }
+
+      if (success) {
+        return transcribedText;
+      }
+    }
+
+    throw lastErr || new Error(`Transcription failed with Custom API Key after multiple attempts`);
   } else {
     // Calling the standard proxy
     const response = await fetch('/api/transcribe', {

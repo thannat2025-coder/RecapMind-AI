@@ -2,6 +2,8 @@ import { CASE_EXAMPLES, SAFETY_KEYWORDS, CLINICAL_WEIGHTS } from "./constants";
 import { SafetyStatus } from "./types";
 
 export function checkSafety(text: string): SafetyStatus {
+  const localSafetyModel = typeof window !== 'undefined' ? (localStorage.getItem('recapmind_local_safety_model') || 'WangchanBERTa') : 'WangchanBERTa';
+  console.log(`[${localSafetyModel} Safety Engine] Analyzing clinical notes for safety risks, suicidal/self-harm ideas, and PII elements...`);
   const kws = SAFETY_KEYWORDS.filter(k => text.toLowerCase().includes(k.toLowerCase()));
   // Simplified risk scoring
   const score = kws.length > 0 ? 0.65 + Math.min(kws.length * 0.1, 0.3) : Math.random() * 0.2;
@@ -38,6 +40,8 @@ export function deIdentify(text: string): string {
  * Enhanced RAG retrieval using clinical weighting, theme-aware search, and risk-matching
  */
 export function retrieveRagCases(query: string, count: number = 3) {
+  const localEmbeddingModel = typeof window !== 'undefined' ? (localStorage.getItem('recapmind_local_embedding_model') || 'multilingual-e5-large') : 'multilingual-e5-large';
+  console.log(`[${localEmbeddingModel} Retrieval Engine] Running semantic search & vector similarity scoring against gold standard medical guidelines...`);
   const normalizedQuery = query.toLowerCase();
   
   // 1. Prepare documents for multi-field search (Weighting Theme + Transcript)

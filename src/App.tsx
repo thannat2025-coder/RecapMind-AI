@@ -109,7 +109,7 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [customApiKey, setCustomApiKeyState] = useState(localStorage.getItem('recapmind_custom_api_key') || '');
   const [customEmail, setCustomEmailState] = useState(localStorage.getItem('recapmind_custom_email') || '');
-  const [customModel, setCustomModelState] = useState(localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash');
+  const [customModel, setCustomModelState] = useState(localStorage.getItem('recapmind_custom_model') || 'gemini-3.5-flash');
   const [tempApiKey, setTempApiKey] = useState(customApiKey);
   const [tempEmail, setTempEmail] = useState(customEmail);
   const [tempModel, setTempModel] = useState(customModel);
@@ -118,9 +118,11 @@ export default function App() {
   // Local LLM & Hospital HIS Connection Settings State
   const [llmProvider, setLlmProvider] = useState<string>(localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini');
   const [localEndpoint, setLocalEndpoint] = useState<string>(localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1');
-  const [localModel, setLocalModel] = useState<string>(localStorage.getItem('recapmind_local_model') || 'llama3');
+  const [localModel, setLocalModel] = useState<string>(localStorage.getItem('recapmind_local_model') || 'Typhoon2-8B-Instruct.Q4_K_M.gguf');
   const [localSttModel, setLocalSttModel] = useState<string>(localStorage.getItem('recapmind_local_stt_model') || 'whisper-1');
   const [localApiKey, setLocalApiKey] = useState<string>(localStorage.getItem('recapmind_local_api_key') || '');
+  const [localEmbeddingModel, setLocalEmbeddingModel] = useState<string>(localStorage.getItem('recapmind_local_embedding_model') || 'multilingual-e5-large');
+  const [localSafetyModel, setLocalSafetyModel] = useState<string>(localStorage.getItem('recapmind_local_safety_model') || 'WangchanBERTa');
 
   const [hisEnabled, setHisEnabled] = useState<boolean>(localStorage.getItem('recapmind_his_enabled') === 'true');
   const [hisEndpoint, setHisEndpoint] = useState<string>(localStorage.getItem('recapmind_his_endpoint') || 'https://his.hospital-intranet.go.th/api/v1/clinical-notes');
@@ -136,6 +138,8 @@ export default function App() {
   const [tempLocalModel, setTempLocalModel] = useState(localModel);
   const [tempLocalSttModel, setTempLocalSttModel] = useState(localSttModel);
   const [tempLocalApiKey, setTempLocalApiKey] = useState(localApiKey);
+  const [tempLocalEmbeddingModel, setTempLocalEmbeddingModel] = useState(localEmbeddingModel);
+  const [tempLocalSafetyModel, setTempLocalSafetyModel] = useState(localSafetyModel);
 
   const [tempHisEnabled, setTempHisEnabled] = useState(hisEnabled);
   const [tempHisEndpoint, setTempHisEndpoint] = useState(hisEndpoint);
@@ -168,13 +172,15 @@ export default function App() {
   const openSettings = () => {
     setTempApiKey(localStorage.getItem('recapmind_custom_api_key') || '');
     setTempEmail(localStorage.getItem('recapmind_custom_email') || '');
-    setTempModel(localStorage.getItem('recapmind_custom_model') || 'gemini-1.5-flash');
+    setTempModel(localStorage.getItem('recapmind_custom_model') || 'gemini-3.5-flash');
     
     setTempLlmProvider(localStorage.getItem('recapmind_llm_provider') || 'cloud_gemini');
     setTempLocalEndpoint(localStorage.getItem('recapmind_local_endpoint') || 'http://localhost:11434/v1');
-    setTempLocalModel(localStorage.getItem('recapmind_local_model') || 'llama3');
+    setTempLocalModel(localStorage.getItem('recapmind_local_model') || 'Typhoon2-8B-Instruct.Q4_K_M.gguf');
     setTempLocalSttModel(localStorage.getItem('recapmind_local_stt_model') || 'whisper-1');
     setTempLocalApiKey(localStorage.getItem('recapmind_local_api_key') || '');
+    setTempLocalEmbeddingModel(localStorage.getItem('recapmind_local_embedding_model') || 'multilingual-e5-large');
+    setTempLocalSafetyModel(localStorage.getItem('recapmind_local_safety_model') || 'WangchanBERTa');
 
     setTempHisEnabled(localStorage.getItem('recapmind_his_enabled') === 'true');
     setTempHisEndpoint(localStorage.getItem('recapmind_his_endpoint') || 'https://his.hospital-intranet.go.th/api/v1/clinical-notes');
@@ -213,12 +219,16 @@ export default function App() {
     localStorage.setItem('recapmind_local_model', tempLocalModel.trim());
     localStorage.setItem('recapmind_local_stt_model', tempLocalSttModel.trim());
     localStorage.setItem('recapmind_local_api_key', tempLocalApiKey.trim());
+    localStorage.setItem('recapmind_local_embedding_model', tempLocalEmbeddingModel.trim());
+    localStorage.setItem('recapmind_local_safety_model', tempLocalSafetyModel.trim());
 
     setLlmProvider(tempLlmProvider);
     setLocalEndpoint(tempLocalEndpoint);
     setLocalModel(tempLocalModel);
     setLocalSttModel(tempLocalSttModel);
     setLocalApiKey(tempLocalApiKey);
+    setLocalEmbeddingModel(tempLocalEmbeddingModel);
+    setLocalSafetyModel(tempLocalSafetyModel);
 
     // Save HIS settings
     localStorage.setItem('recapmind_his_enabled', tempHisEnabled ? 'true' : 'false');
@@ -247,6 +257,8 @@ export default function App() {
     localStorage.removeItem('recapmind_local_model');
     localStorage.removeItem('recapmind_local_stt_model');
     localStorage.removeItem('recapmind_local_api_key');
+    localStorage.removeItem('recapmind_local_embedding_model');
+    localStorage.removeItem('recapmind_local_safety_model');
 
     localStorage.removeItem('recapmind_his_enabled');
     localStorage.removeItem('recapmind_his_endpoint');
@@ -255,16 +267,18 @@ export default function App() {
 
     setTempApiKey('');
     setTempEmail('');
-    setTempModel('gemini-1.5-flash');
+    setTempModel('gemini-3.5-flash');
     setCustomApiKeyState('');
     setCustomEmailState('');
-    setCustomModelState('gemini-1.5-flash');
+    setCustomModelState('gemini-3.5-flash');
 
     setLlmProvider('cloud_gemini');
     setLocalEndpoint('http://localhost:11434/v1');
-    setLocalModel('llama3');
+    setLocalModel('Typhoon2-8B-Instruct.Q4_K_M.gguf');
     setLocalSttModel('whisper-1');
     setLocalApiKey('');
+    setLocalEmbeddingModel('multilingual-e5-large');
+    setLocalSafetyModel('WangchanBERTa');
 
     setHisEnabled(false);
     setHisEndpoint('https://his.hospital-intranet.go.th/api/v1/clinical-notes');
@@ -273,9 +287,11 @@ export default function App() {
 
     setTempLlmProvider('cloud_gemini');
     setTempLocalEndpoint('http://localhost:11434/v1');
-    setTempLocalModel('llama3');
+    setTempLocalModel('Typhoon2-8B-Instruct.Q4_K_M.gguf');
     setTempLocalSttModel('whisper-1');
     setTempLocalApiKey('');
+    setTempLocalEmbeddingModel('multilingual-e5-large');
+    setTempLocalSafetyModel('WangchanBERTa');
 
     setTempHisEnabled(false);
     setTempHisEndpoint('https://his.hospital-intranet.go.th/api/v1/clinical-notes');
@@ -1217,17 +1233,35 @@ Generated: ${new Date().toLocaleString('th-TH')}
                           onChange={(e) => setTempModel(e.target.value)}
                           className="w-full text-[12px] border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
                         >
-                          <option value="gemini-1.5-flash">Gemini 1.5 Flash (มาตรฐาน ถอดความเก่ง รวดเร็วสูง)</option>
-                          <option value="gemini-2.5-flash">Gemini 2.5 Flash (คิดเร็ว และประหยัดทอร์เค่น)</option>
-                          <option value="gemini-1.5-pro">Gemini 1.5 Pro (สรุปแนวคิดทางการแพทย์เชิงลึก)</option>
+                          <option value="gemini-3.5-flash">Gemini 3.5 Flash (แนะนำ - ถอดความเก่ง รวดเร็วสูงสุด)</option>
+                          <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (รวดเร็วสูงและประหยัดพลังงาน)</option>
+                          <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (ฉลาดวิเคราะห์ และสรุปเชิงลึกระดับศาสตราจารย์)</option>
                         </select>
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-3 pt-2">
                       <p className="text-[11px] text-[#A0522D] bg-[#FFF8DC] border border-[#F5DEB3] rounded-xl p-2 leading-relaxed">
-                        ⚠️ <b>Local Offline Hospital Mode:</b> ใช้สำหรับการเชื่อมโยงกับแบบจำลอง open-source (เช่น Llama 3, Mistral, SeaLLM) ที่เปิดอยู่บนโครงสร้างเซิร์ฟเวอร์ร่าของแผนกไอทีโรงพยาบาลเองเพื่อความปลอดภัยสูงสุดและไม่ใช้อินเทอร์เน็ต
+                        ⚠️ <b>Local Offline Hospital Mode:</b> ใช้สำหรับการเชื่อมโยงกับแบบจำลอง open-source ภายในโรงพยาบาลเพื่อความปลอดภัยสูงสุดและไม่ใช้อินเทอร์เน็ต
                       </p>
+
+                      <div className="flex justify-between items-center bg-[#F0FDF4] border border-[#BBF7D0] rounded-xl p-2">
+                        <div className="text-[10px] text-[#15803D] font-medium leading-tight">
+                          💡 <b>Recommended Thai Clinical Stack:</b> แนะนำชุดโมเดลความปลอดภัยสูงพิเศษสำหรับวงการแพทย์ไทย
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTempLocalModel('Typhoon2-8B-Instruct.Q4_K_M.gguf');
+                            setTempLocalEmbeddingModel('multilingual-e5-large');
+                            setTempLocalSafetyModel('WangchanBERTa');
+                            setTempLocalSttModel('whisper-1');
+                          }}
+                          className="px-2.5 py-1 text-[10px] font-bold bg-[#16A34A] hover:bg-[#15803D] text-white rounded-lg transition-colors cursor-pointer shrink-0 ml-2"
+                        >
+                          ใช้เซ็ตอัปแนะนำ 🇹🇭
+                        </button>
+                      </div>
 
                       <div>
                         <label className="text-[11px] font-bold text-slate-700 block mb-1">🌐 ที่อยู่ URL บริการเครือข่ายภายในโรงพยาบาล (Local Endpoint API)</label>
@@ -1245,12 +1279,12 @@ Generated: ${new Date().toLocaleString('th-TH')}
 
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 ชื่อแบบจำลองภาษา (Local LLM Model)</label>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🤖 แบบจำลองภาษาหลัก (Local LLM Model)</label>
                           <input 
                             type="text" 
                             value={tempLocalModel}
                             onChange={(e) => setTempLocalModel(e.target.value)}
-                            placeholder="llama3, sea-lion, thollama..."
+                            placeholder="Typhoon2-8B-Instruct.Q4_K_M.gguf"
                             className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
                           />
                         </div>
@@ -1261,6 +1295,29 @@ Generated: ${new Date().toLocaleString('th-TH')}
                             value={tempLocalSttModel}
                             onChange={(e) => setTempLocalSttModel(e.target.value)}
                             placeholder="whisper-1 หรือ faster-whisper"
+                            className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🔎 โมเดลดึงข้อมูล (Retrieval / Embedding)</label>
+                          <input 
+                            type="text" 
+                            value={tempLocalEmbeddingModel}
+                            onChange={(e) => setTempLocalEmbeddingModel(e.target.value)}
+                            placeholder="multilingual-e5-large"
+                            className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">🛡️ โมเดลตรวจสอบความปลอดภัย (Safety Model)</label>
+                          <input 
+                            type="text" 
+                            value={tempLocalSafetyModel}
+                            onChange={(e) => setTempLocalSafetyModel(e.target.value)}
+                            placeholder="WangchanBERTa"
                             className="w-full text-[12px] font-mono border rounded-xl px-3 py-2 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all border-slate-300"
                           />
                         </div>
@@ -1406,9 +1463,15 @@ Generated: ${new Date().toLocaleString('th-TH')}
         <div className="ml-auto flex items-center gap-[10px]">
           <div className="flex items-center gap-[5px] mr-2">
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">🔒 PDPA Security</span>
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-colors ${isOnline ? 'bg-green-150 text-green-700 border-green-300' : 'bg-red-100 text-red-700 border-red-200'}`}>
-              {isOnline ? '🌐 Online' : '📴 Offline Mode'}
-            </span>
+            {llmProvider === 'local_llm' ? (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 animate-pulse flex items-center gap-1" title={`Main LLM: ${localModel}\nRetrieval: ${localEmbeddingModel}\nSafety: ${localSafetyModel}`}>
+                🖥️ {localModel.split('.')[0]} + {localEmbeddingModel.split('-')[0]} + {localSafetyModel}
+              </span>
+            ) : (
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-colors ${isOnline ? 'bg-green-150 text-green-700 border-green-300' : 'bg-red-100 text-red-700 border-red-200'}`}>
+                {isOnline ? '🌐 Online' : '📴 Offline Mode'}
+              </span>
+            )}
             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition-colors ${customApiKey ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-blue-100 text-blue-700 border-blue-200'}`}>
               {customApiKey ? '🔑 Custom: ' + (customEmail ? customEmail : 'Connected') : '⚡ API Host Agent'}
             </span>
