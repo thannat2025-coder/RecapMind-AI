@@ -47,6 +47,7 @@ import { CASE_EXAMPLES } from './constants';
 import { checkSafety, deIdentify, retrieveRagCases } from './utils';
 import { compressAudioFile } from './utils/audioCompressor';
 import { generateClinicalNote, generateTranscription } from './lib/gemini';
+import { PipelineViewer } from './components/PipelineViewer';
 import { auth, loginWithGoogle, logout, saveTrainingData, getTrainingData } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
@@ -1841,25 +1842,53 @@ Generated: ${new Date().toLocaleString('th-TH')}
                     </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-5 custom-scrollbar space-y-12 bg-slate-50">
+                <div className="flex-1 overflow-y-auto p-5 custom-scrollbar space-y-6 bg-slate-50">
                   {Object.keys(notes).length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                      <BrainCircuit size={48} className="opacity-20 mb-4" />
-                      <p className="text-center font-medium">ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้าย<br /><span className="text-[11px] font-normal opacity-70">{sessionType === 'cbt' ? 'ระบบจะวิเคราะห์และสรุปด้วย 2 โมเดล (RAG และ Fine-tuning) พร้อมกันเพื่อให้คุณเลือกใช้งานต่อ' : 'ระบบจะประมวลผลดึงประวัติแพทย์ป้อนและเขียน SOAP Note อัจฉริยะ (Dynamic RAG) เพียง 1 ฉบับที่แม่นยำสูงสุด'}</span></p>
+                    <div className="space-y-6 max-w-4xl mx-auto">
+                      <PipelineViewer 
+                        isLoading={isLoading} 
+                        loadingMessage={loadingMessage} 
+                        hasNotes={false}
+                        onSelectSampleCase={() => {
+                          if (CASE_EXAMPLES.length > 0) {
+                            loadCase(CASE_EXAMPLES[0].id);
+                          }
+                        }}
+                      />
+                      
+                      <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm flex flex-col items-center justify-center text-slate-400">
+                        <BrainCircuit size={48} className="opacity-20 mb-4" />
+                        <p className="text-center font-medium text-slate-700">
+                          ป้อน Transcript แล้วกดปุ่ม Generate ด้านล่างซ้ายเพื่อทดสอบ
+                        </p>
+                        <p className="text-center text-[11px] text-slate-400 mt-1 max-w-md leading-relaxed">
+                          {sessionType === 'cbt' 
+                            ? 'ระบบจะวิเคราะห์ความปลอดภัย สแกนข้อมูล RAG และประมวลผลด้วยโมเดล Typhoon2-8B-Instruct และชุดโมเดลความปลอดภัยเฉพาะทางภาษาไทยสัญชาติไทยระดับคลินิก' 
+                            : 'ระบบจะประมวลผลดึงประวัติแพทย์ป้อนและเขียน SOAP Note อัจฉริยะ (Dynamic RAG) เพียง 1 ฉบับที่แม่นยำสูงสุด'
+                          }
+                        </p>
+                      </div>
                     </div>
                   ) : (
-                    (sessionType === 'cbt' ? ['rag', 'finetuned'] : ['rag']).map((m) => {
-                      const note = notes[m];
-                      if (!note) return null;
-                      const draft = noteDrafts[m] || note;
+                    <div className="space-y-6 max-w-4xl mx-auto">
+                      <PipelineViewer 
+                        isLoading={isLoading} 
+                        loadingMessage={loadingMessage} 
+                        hasNotes={true}
+                      />
+                      
+                      {(sessionType === 'cbt' ? ['rag', 'finetuned'] : ['rag']).map((m) => {
+                        const note = notes[m];
+                        if (!note) return null;
+                        const draft = noteDrafts[m] || note;
 
-                      return (
-                        <div 
-                          key={m} 
-                          ref={(el) => (noteRefs.current[m] = el)}
-                          className={`space-y-4 max-w-4xl mx-auto p-6 rounded-2xl border bg-white shadow-md relative transition-all ${selectedModel === m ? 'ring-2 ring-blue-500 border-transparent shadow-blue-100' : 'border-slate-200 shadow-slate-100 hover:shadow-md'}`}
-                          onClick={() => setSelectedModel(m as any)}
-                        >
+                        return (
+                          <div 
+                            key={m} 
+                            ref={(el) => (noteRefs.current[m] = el)}
+                            className={`space-y-4 p-6 rounded-2xl border bg-white shadow-md relative transition-all ${selectedModel === m ? 'ring-2 ring-blue-500 border-transparent shadow-blue-100' : 'border-slate-200 shadow-slate-100 hover:shadow-md'}`}
+                            onClick={() => setSelectedModel(m as any)}
+                          >
                           {/* Model Ribbon */}
                           <div className={`absolute top-0 right-0 px-4 py-1 text-[10px] font-black uppercase tracking-widest text-white rounded-bl-xl ${sessionType === 'psychiatric' ? 'bg-[#1549C7]' : m === 'baseline' ? 'bg-slate-400' : m === 'rag' ? 'bg-blue-600' : 'bg-emerald-600'}`}>
                             {sessionType === 'psychiatric' ? (hasUserPsychCases ? 'Dynamic RAG' : 'Zero-shot') : `${m} model`}
@@ -2201,7 +2230,8 @@ Generated: ${new Date().toLocaleString('th-TH')}
                           </div>
                         </div>
                       );
-                    })
+                    })}
+                    </div>
                   )}
                 </div>
               </main>
