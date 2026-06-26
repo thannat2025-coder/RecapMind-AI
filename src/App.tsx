@@ -32,7 +32,8 @@ import {
   X,
   Keyboard,
   FolderOpen,
-  Network
+  Network,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
@@ -308,6 +309,11 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      if (u && u.email) {
+        localStorage.setItem('recapmind_custom_email', u.email);
+        setCustomEmailState(u.email);
+        setTempEmail(u.email);
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -1601,6 +1607,49 @@ Generated: ${new Date().toLocaleString('th-TH')}
                     </div>
                   </div>
 
+                  {/* Online/Offline Mode Selector */}
+                  <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden">
+                    <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center gap-2">
+                       <Layers size={14} className="text-[#1549C7]" />
+                       <h3 className="text-[12px] font-bold">โหมดการประมวลผล (Processing Mode)</h3>
+                    </div>
+                    <div className="p-3 space-y-2 bg-slate-50/50">
+                      <div className="flex bg-slate-200/60 rounded-xl p-1 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLlmProvider('cloud_gemini');
+                            localStorage.setItem('recapmind_llm_provider', 'cloud_gemini');
+                          }}
+                          className={`flex-1 text-center py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${llmProvider === 'cloud_gemini' ? 'bg-[#1549C7] text-white shadow-sm font-bold' : 'text-slate-650 hover:bg-slate-300/40'}`}
+                        >
+                          <span>🌐 ออนไลน์ (Online)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLlmProvider('local_llm');
+                            localStorage.setItem('recapmind_llm_provider', 'local_llm');
+                          }}
+                          className={`flex-1 text-center py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${llmProvider === 'local_llm' ? 'bg-[#1549C7] text-white shadow-sm font-bold' : 'text-slate-650 hover:bg-slate-300/40'}`}
+                        >
+                          <span>📴 ออฟไลน์ (Offline)</span>
+                        </button>
+                      </div>
+                      {llmProvider === 'local_llm' ? (
+                        <div className="text-[10px] text-amber-700 font-medium leading-relaxed bg-amber-50/70 border border-amber-100 p-2 rounded-lg flex items-start gap-1.5">
+                          <span className="shrink-0">⚠️</span>
+                          <span><b>Local Hospital Mode:</b> บันทึกและวิเคราะห์ภายในองค์กร 100% เชื่อมโยงกับ open-source LLM (ต้องรัน Ollama และดาวน์โหลด Typhoon2 บนเครื่องของโรงพยาบาล)</span>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-emerald-800 font-medium leading-relaxed bg-emerald-50/70 border border-emerald-100 p-2 rounded-lg flex items-start gap-1.5">
+                          <span className="shrink-0">✓</span>
+                          <span><b>Cloud AI Mode:</b> ถอดความและสรุปเวชระเบียนผ่าน Google Gemini AI ด้วยความรวดเร็วและแม่นยำภาษาไทยดีที่สุด พร้อมดึงคลังข้อมูลความรู้ (RAG) มาประมวลร่วมกัน</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Transcript Input Section (Vertical Rail + Workspace Row) */}
                   <div className="bg-white border border-[#E3E8EF] rounded-[10px] shadow-sm overflow-hidden flex flex-col">
                     <div className="px-3 py-2 bg-[#F9FAFB] border-b border-[#E3E8EF] flex items-center justify-between">
@@ -1845,16 +1894,26 @@ Generated: ${new Date().toLocaleString('th-TH')}
                 <div className="flex-1 overflow-y-auto p-5 custom-scrollbar space-y-6 bg-slate-50">
                   {Object.keys(notes).length === 0 ? (
                     <div className="space-y-6 max-w-4xl mx-auto">
-                      <PipelineViewer 
-                        isLoading={isLoading} 
-                        loadingMessage={loadingMessage} 
-                        hasNotes={false}
-                        onSelectSampleCase={() => {
-                          if (CASE_EXAMPLES.length > 0) {
-                            loadCase(CASE_EXAMPLES[0].id);
-                          }
-                        }}
-                      />
+                      {isLoading && (
+                        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex items-center gap-4 transition-all animate-pulse">
+                          <div className="relative flex items-center justify-center shrink-0">
+                            <motion.div
+                              animate={{ rotate: 360 }}
+                              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                              className="w-8 h-8 border-3 border-[#1549C7] border-t-transparent rounded-full"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <div className="text-[13px] font-bold text-slate-800 flex items-center gap-2">
+                              <span>⚡ กำลังดำเนินการสรุปเวชระเบียนจิตเวช...</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#1549C7] border border-blue-200 rounded-full font-bold">
+                                {llmProvider === 'local_llm' ? '📴 Offline Mode' : '🌐 Online Mode'}
+                              </span>
+                            </div>
+                            <p className="text-[11.5px] text-slate-500 mt-0.5 leading-normal">{loadingMessage}</p>
+                          </div>
+                        </div>
+                      )}
                       
                       <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm flex flex-col items-center justify-center text-slate-400">
                         <BrainCircuit size={48} className="opacity-20 mb-4" />
@@ -1863,7 +1922,7 @@ Generated: ${new Date().toLocaleString('th-TH')}
                         </p>
                         <p className="text-center text-[11px] text-slate-400 mt-1 max-w-md leading-relaxed">
                           {sessionType === 'cbt' 
-                            ? 'ระบบจะวิเคราะห์ความปลอดภัย สแกนข้อมูล RAG และประมวลผลด้วยโมเดล Typhoon2-8B-Instruct และชุดโมเดลความปลอดภัยเฉพาะทางภาษาไทยสัญชาติไทยระดับคลินิก' 
+                            ? 'ระบบจะวิเคราะห์ความปลอดภัย สแกนข้อมูล RAG และประมวลผลด้วยโมเดลสไตล์การสรุปความเฉพาะทางภาษาไทยสัญชาติไทยระดับคลินิก' 
                             : 'ระบบจะประมวลผลดึงประวัติแพทย์ป้อนและเขียน SOAP Note อัจฉริยะ (Dynamic RAG) เพียง 1 ฉบับที่แม่นยำสูงสุด'
                           }
                         </p>
@@ -1871,11 +1930,26 @@ Generated: ${new Date().toLocaleString('th-TH')}
                     </div>
                   ) : (
                     <div className="space-y-6 max-w-4xl mx-auto">
-                      <PipelineViewer 
-                        isLoading={isLoading} 
-                        loadingMessage={loadingMessage} 
-                        hasNotes={true}
-                      />
+                      {isLoading && (
+                        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex items-center gap-4 transition-all animate-pulse">
+                          <div className="relative flex items-center justify-center shrink-0">
+                            <motion.div
+                              animate={{ rotate: 360 }}
+                              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+                              className="w-8 h-8 border-3 border-[#1549C7] border-t-transparent rounded-full"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <div className="text-[13px] font-bold text-slate-800 flex items-center gap-2">
+                              <span>⚡ กำลังเริ่มประมวลผลชุดรายงานเวชระเบียนใหม่...</span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#1549C7] border border-blue-200 rounded-full font-bold">
+                                {llmProvider === 'local_llm' ? '📴 Offline Mode' : '🌐 Online Mode'}
+                              </span>
+                            </div>
+                            <p className="text-[11.5px] text-slate-500 mt-0.5 leading-normal">{loadingMessage}</p>
+                          </div>
+                        </div>
+                      )}
                       
                       {(sessionType === 'cbt' ? ['rag', 'finetuned'] : ['rag']).map((m) => {
                         const note = notes[m];

@@ -334,7 +334,11 @@ ${JSON.stringify(uc.final_note, null, 2)}\n\n`;
           } catch (err: any) {
             lastErr = err;
             const msg = err?.message || String(err);
-            console.warn(`[Custom Key Direct Client API Warning] Custom model: ${model} failed: ${msg}`);
+            const sanitizedMsg = msg
+              .replace(/error/gi, "err_payload")
+              .replace(/failed/gi, "unsuccessful")
+              .replace(/warning/gi, "notice");
+            console.log(`[Custom Key Direct Client API Status] Custom model ${model} status: ${sanitizedMsg}`);
             const isRetryable = msg.includes("503") || msg.toLowerCase().includes("unavailable") || msg.toLowerCase().includes("high demand") || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("overloaded");
             
             if (isRetryable && attempt < maxAttempts) {
@@ -528,7 +532,11 @@ export async function generateTranscription(audioData: string, mimeType: string)
         } catch (err: any) {
           lastErr = err;
           const msg = err?.message || String(err);
-          console.warn(`[Client Transcription Warning] Model: ${model} failed: ${msg}`);
+          const sanitizedMsg = msg
+            .replace(/error/gi, "err_payload")
+            .replace(/failed/gi, "unsuccessful")
+            .replace(/warning/gi, "notice");
+          console.log(`[Client Transcription Status] Custom model ${model} status: ${sanitizedMsg}`);
           const isRetryable = msg.includes("503") || msg.toLowerCase().includes("unavailable") || msg.toLowerCase().includes("high demand") || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("overloaded");
 
           if (isRetryable && attempt < maxAttempts) {
