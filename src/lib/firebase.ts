@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInAnonymously, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, collection, addDoc, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { ClinicalNote } from '../types';
@@ -15,6 +15,18 @@ export const loginWithGoogle = async () => {
     return result.user;
   } catch (error) {
     console.error("Login failed", error);
+    throw error;
+  }
+};
+
+export const loginAnonymously = async (name: string, email: string) => {
+  try {
+    localStorage.setItem('recapmind_demo_name', name);
+    localStorage.setItem('recapmind_demo_email', email);
+    const result = await signInAnonymously(auth);
+    return result.user;
+  } catch (error) {
+    console.error("Anonymous login failed", error);
     throw error;
   }
 };

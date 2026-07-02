@@ -42,14 +42,21 @@ import * as pdfjs from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import { Tab, InputMode, ClinicalNote, SafetyStatus, CaseExample } from './types';
 
-// PDF Worker setup
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// PDF Worker setup - safely guarded to prevent startup script errors
+try {
+  const pdfjsLib = (pdfjs as any).GlobalWorkerOptions ? pdfjs : ((pdfjs as any).default || pdfjs);
+  if (pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version || '3.11.174'}/pdf.worker.min.js`;
+  }
+} catch (e) {
+  console.warn("Failed to set PDF worker source:", e);
+}
 import { CASE_EXAMPLES } from './constants';
 import { checkSafety, deIdentify, retrieveRagCases } from './utils';
 import { compressAudioFile } from './utils/audioCompressor';
 import { generateClinicalNote, generateTranscription } from './lib/gemini';
 import { PipelineViewer } from './components/PipelineViewer';
-import { auth, loginWithGoogle, logout, saveTrainingData, getTrainingData } from './lib/firebase';
+import { auth, loginWithGoogle, loginAnonymously, logout, saveTrainingData, getTrainingData } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
 const EMPTY_NOTE: ClinicalNote = {
@@ -109,6 +116,7 @@ export default function App() {
 
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [customApiKey, setCustomApiKeyState] = useState(localStorage.getItem('recapmind_custom_api_key') || '');
   const [customEmail, setCustomEmailState] = useState(localStorage.getItem('recapmind_custom_email') || '');
   const [customModel, setCustomModelState] = useState(localStorage.getItem('recapmind_custom_model') || 'gemini-3.5-flash');
@@ -308,11 +316,26 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u && u.email) {
-        localStorage.setItem('recapmind_custom_email', u.email);
-        setCustomEmailState(u.email);
-        setTempEmail(u.email);
+      if (u) {
+        const isAnon = u.isAnonymous;
+        const demoEmail = localStorage.getItem('recapmind_demo_email') || (isAnon ? "thannat2025@gmail.com" : u.email || "");
+        const demoName = localStorage.getItem('recapmind_demo_name') || (isAnon ? "นพ. ธนัตถ์" : u.displayName || "Clinician");
+        
+        const enhancedUser = {
+          ...u,
+          displayName: demoName,
+          email: demoEmail,
+        } as any;
+        
+        setUser(enhancedUser);
+        
+        if (demoEmail) {
+          localStorage.setItem('recapmind_custom_email', demoEmail);
+          setCustomEmailState(demoEmail);
+          setTempEmail(demoEmail);
+        }
+      } else {
+        setUser(null);
       }
     });
     return () => unsubscribe();
@@ -452,7 +475,11 @@ export default function App() {
       } else if (fileName.endsWith('.pdf')) {
         setLoadingMessage('กำลังถอดพจนานุกรมประมวลคำจากไฟล์เอกสาร PDF...');
         const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        const pdfjsLib = (pdfjs as any).getDocument ? pdfjs : ((pdfjs as any).default || pdfjs);
+        if (!pdfjsLib || !pdfjsLib.getDocument) {
+          throw new Error('PDF library (pdfjs-dist) failed to load. Please convert your PDF to .txt or copy-paste the text.');
+        }
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         let fullText = '';
         for (let i = 1; i <= pdf.numPages; i++) {
           setLoadingMessage(`กำลังอ่านหน้าเอกสาร PDF [${i}/${pdf.numPages}]...`);
@@ -982,11 +1009,27 @@ Generated: ${new Date().toLocaleString('th-TH')}
     }
   };
 
-  const handleLogin = async () => {
+  const handleLogin = () => {
+    setIsLoginModalOpen(true);
+  };
+
+  const handleRealGoogleLogin = async () => {
     try {
+      setIsLoginModalOpen(false);
       await loginWithGoogle();
     } catch (error) {
-      alert("Login Failed: " + (error as any).message);
+      console.error("Login Failed:", error);
+      alert("การเชื่อมต่อระบบ Google Login ใน Iframe/Sandbox มีข้อจำกัดด้านความปลอดภัยของเบราว์เซอร์\nระบบจะเปิดหน้าต่างล็อกอินเสมือนจริง (Virtual Mock Login) เพื่อความสะดวกในการทดสอบใช้งานครับ");
+      setIsLoginModalOpen(true);
+    }
+  };
+
+  const handleDemoLogin = async (name: string, email: string) => {
+    try {
+      setIsLoginModalOpen(false);
+      await loginAnonymously(name, email);
+    } catch (error) {
+      alert("เดโมล็อกอินล้มเหลว: " + (error as any).message);
     }
   };
 
@@ -1058,6 +1101,246 @@ Generated: ${new Date().toLocaleString('th-TH')}
   };
 
   const currentNote = notes[selectedModel] || null;
+
+  if (!user) {
+    return (
+      <div className="flex flex-col min-h-screen bg-slate-900 text-white font-sans overflow-y-auto relative select-none">
+        {/* Background ambient lighting */}
+        <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
+          <div className="absolute top-[-20%] left-[-20%] w-[80%] h-[80%] rounded-full bg-blue-500/10 blur-[120px]" />
+          <div className="absolute bottom-[-20%] right-[-10%] w-[90%] h-[90%] rounded-full bg-indigo-500/10 blur-[150px]" />
+        </div>
+
+        {/* Header */}
+        <header className="w-full max-w-7xl mx-auto px-6 py-6 flex items-center justify-between relative z-10 shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">🧠</span>
+            <div>
+              <span className="font-extrabold text-[18px] tracking-tight text-white bg-clip-text">RecapMind</span>
+              <span className="text-[10px] uppercase font-mono tracking-widest bg-blue-500 text-white px-1.5 py-0.5 rounded ml-2 font-bold">Clinical Copilot</span>
+            </div>
+          </div>
+          <span className="text-xs text-slate-400 font-mono">v6.2 — Clinical Sandbox</span>
+        </header>
+
+        {/* Content */}
+        <div className="flex-1 max-w-7xl mx-auto w-full px-6 flex flex-col lg:flex-row items-center justify-center gap-12 pb-16 relative z-10">
+          {/* Left panel: Product Description (Slide 1 style) */}
+          <div className="flex-1 space-y-6 text-center lg:text-left">
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8 }}
+              className="inline-flex items-center gap-2 bg-slate-800/80 border border-slate-700/50 px-3 py-1 rounded-full text-xs text-blue-400 font-semibold"
+            >
+              <Zap size={12} className="animate-pulse" />
+              <span>ระบบผู้ช่วยวิเคราะห์และสรุปเวชระเบียนแพทย์อัจฉริยะ</span>
+            </motion.div>
+
+            <motion.h1 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.1 }}
+              className="text-3xl md:text-5xl font-extrabold tracking-tight text-white leading-tight"
+            >
+              RecapMind <br />
+              <span className="bg-gradient-to-r from-blue-400 via-indigo-300 to-indigo-500 bg-clip-text text-transparent">Clinical Copilot</span>
+            </motion.h1>
+
+            <motion.p 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.2 }}
+              className="text-slate-300 text-sm md:text-[15px] leading-relaxed max-w-xl mx-auto lg:mx-0"
+            >
+              แอปพลิเคชันช่วยเหลือการจดบันทึกประวัติการบำบัดทางคลินิก (Clinical Scribe) โดยใช้เทคโนโลยี AI และระบบบีบอัดไฟล์เสียงในตัว พร้อม Pipeline ตรวจสอบความปลอดภัยและ De-identification คัดกรองข้อมูลระบุตัวตนจริงเพื่อความปลอดภัยสูงสุดของคนไข้
+            </motion.p>
+
+            {/* Feature lists */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left max-w-2xl mx-auto lg:mx-0">
+              <div className="bg-slate-800/40 border border-slate-800 p-4 rounded-2xl flex gap-3 items-start hover:border-slate-700 transition-colors">
+                <span className="p-1.5 bg-blue-500/10 rounded-lg text-blue-400 mt-0.5">🛡️</span>
+                <div>
+                  <h4 className="text-xs font-bold text-white">De-identification Masking</h4>
+                  <p className="text-[11px] text-slate-400 mt-1">คัดกรองชื่อ-นามสกุลจริง [PATIENT_NAME_1] ปกป้องสิทธิส่วนบุคคลตาม PDPA</p>
+                </div>
+              </div>
+              
+              <div className="bg-slate-800/40 border border-slate-800 p-4 rounded-2xl flex gap-3 items-start hover:border-slate-700 transition-colors">
+                <span className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-400 mt-0.5">🧠</span>
+                <div>
+                  <h4 className="text-xs font-bold text-white">คลังเคสครู (Golden Cases)</h4>
+                  <p className="text-[11px] text-slate-400 mt-1">ข้อมูลสรุปและไฟล์ที่ส่งออกจะบันทึกเข้าระบบ Golden Case เพื่อใช้สอนโมเดลให้ฉลาดขึ้น</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/40 border border-slate-800 p-4 rounded-2xl flex gap-3 items-start hover:border-slate-700 transition-colors">
+                <span className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-400 mt-0.5">📊</span>
+                <div>
+                  <h4 className="text-xs font-bold text-white">3 Clinical Templates</h4>
+                  <p className="text-[11px] text-slate-400 mt-1">รองรับ SOAP Note ทั่วไป, Psychiatric Report และ CBT Psychotherapy Record</p>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/40 border border-slate-800 p-4 rounded-2xl flex gap-3 items-start hover:border-slate-700 transition-colors">
+                <span className="p-1.5 bg-amber-500/10 rounded-lg text-amber-400 mt-0.5">🗜️</span>
+                <div>
+                  <h4 className="text-xs font-bold text-white">Audio Compression</h4>
+                  <p className="text-[11px] text-slate-400 mt-1">ระบบบีบอัดสัญญาณเสียงสด อัปโหลดเร็วทันใจแม้อินเทอร์เน็ตจำกัด</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right panel: Sign-in Card (Slide 2 style) */}
+          <div className="w-full max-w-sm shrink-0">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ duration: 0.8 }}
+              className="bg-slate-800/80 border border-slate-700 rounded-3xl p-8 shadow-2xl backdrop-blur-md space-y-6 text-center"
+            >
+              <div className="space-y-2">
+                <div className="w-16 h-16 bg-blue-600/10 border border-blue-500/20 rounded-2xl flex items-center justify-center mx-auto text-3xl">
+                  🔐
+                </div>
+                <h3 className="text-lg font-extrabold text-white">ลงชื่อเข้าสู่ระบบรักษาความปลอดภัย</h3>
+                <p className="text-[12px] text-slate-300 leading-relaxed">
+                  เข้าใช้งานด้วยบัญชี Google เพื่อเชื่อมต่อฐานข้อมูลส่วนบุคคลของคุณอย่างปลอดภัยตามมาตรฐาน PDPA / HIPAA
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <button 
+                  onClick={() => setIsLoginModalOpen(true)}
+                  className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-100 text-slate-800 font-bold py-3.5 px-4 rounded-xl shadow-lg border border-slate-200 transition-all active:scale-[0.98] cursor-pointer"
+                >
+                  <svg className="w-5 h-5" viewBox="0 0 24 24">
+                    <path fill="#EA4335" d="M12 5.04c1.62 0 3.08.56 4.22 1.64l3.15-3.15C17.45 1.74 14.93 1 12 1 7.35 1 3.39 3.65 1.39 7.5l3.86 3C6.2 7.57 8.87 5.04 12 5.04z" />
+                    <path fill="#4285F4" d="M23.45 12.3c0-.82-.07-1.61-.21-2.3H12v4.4h6.43c-.28 1.48-1.12 2.74-2.38 3.58l3.7 2.87c2.16-2 3.7-4.94 3.7-8.55z" />
+                    <path fill="#FBBC05" d="M5.25 14.5c-.24-.73-.38-1.52-.38-2.33s.14-1.6.38-2.33L1.39 6.84C.5 8.64 0 10.26 0 12.17s.5 3.53 1.39 5.33l3.86-3z" />
+                    <path fill="#34A853" d="M12 23c3.24 0 5.97-1.07 7.96-2.92l-3.7-2.87c-1.1.74-2.51 1.18-4.26 1.18-3.13 0-5.8-2.53-6.75-5.46l-3.86 3C3.39 20.35 7.35 23 12 23z" />
+                  </svg>
+                  <span className="font-bold text-slate-700">Sign in with Google</span>
+                </button>
+                
+                <p className="text-[10px] text-slate-400">
+                  สิทธิ์การเข้าถึงข้อมูลจะถูกคุ้มครองอย่างเคร่งครัดตามข้อกำหนดสิทธิการรักษาพยาบาล
+                </p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-700/50 flex items-center justify-center gap-2 text-[11px] text-slate-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span>พร้อมใช้งานระบบจำลองเพื่อความสะดวก (Demo Safe)</span>
+              </div>
+            </motion.div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <footer className="w-full border-t border-slate-800 text-center py-6 text-xs text-slate-500 relative z-10 shrink-0">
+          <p>© 2026 RecapMind — ระบบวิเคราะห์เวชระเบียนอัจฉริยะ (Sandbox Edition). พัฒนาโดย คณะแพทยศาสตร์.</p>
+        </footer>
+
+        {/* Google Account Selector Pop-up Modal (Slide 2 simulated dialog) */}
+        <AnimatePresence>
+          {isLoginModalOpen && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-slate-800"
+            >
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden flex flex-col border border-slate-200"
+              >
+                {/* Header with Google Logo */}
+                <div className="p-6 pb-4 border-b border-slate-100 flex flex-col items-center text-center">
+                  <svg className="w-8 h-8 mb-3" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.85z" />
+                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.85c.87-2.6 3.3-4.53 6.16-4.53z" />
+                  </svg>
+                  <h2 className="text-[16px] font-bold text-slate-800">ลงชื่อเข้าใช้งานด้วย Google</h2>
+                  <p className="text-[11px] text-slate-500 mt-1">เลือกบัญชีเพื่อดำเนินการต่อยัง <b>RecapMind</b></p>
+                </div>
+
+                {/* Account list */}
+                <div className="p-4 space-y-2">
+                  {/* Account 1: thannat2025@gmail.com */}
+                  <button 
+                    onClick={() => handleDemoLogin("นพ. ธนัตถ์", "thannat2025@gmail.com")}
+                    className="w-full text-left p-3 rounded-xl border border-slate-100 hover:border-slate-300 hover:bg-slate-50 flex items-center gap-3 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold shadow-sm">
+                      T
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>นพ. ธนัตถ์</span>
+                        <span className="text-[9px] bg-indigo-50 text-indigo-600 border border-indigo-100 px-1 py-0.2 rounded font-bold shrink-0">เด็ก / CBT</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">thannat2025@gmail.com</div>
+                    </div>
+                  </button>
+
+                  {/* Account 2: demo.clinician@hospital.go.th */}
+                  <button 
+                    onClick={() => handleDemoLogin("Dr. Clinician", "demo.clinician@hospital.go.th")}
+                    className="w-full text-left p-3 rounded-xl border border-slate-100 hover:border-slate-300 hover:bg-slate-50 flex items-center gap-3 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center text-sm font-bold shadow-sm">
+                      C
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[12px] font-bold text-slate-800 flex items-center gap-1.5">
+                        <span>Dr. Clinician</span>
+                        <span className="text-[9px] bg-emerald-50 text-emerald-600 border border-emerald-100 px-1 py-0.2 rounded font-bold shrink-0">แพทย์เวชปฏิบัติ</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate">demo.clinician@hospital.go.th</div>
+                    </div>
+                  </button>
+
+                  <div className="relative py-2 shrink-0">
+                    <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-100" /></div>
+                    <div className="relative flex justify-center text-[10px] uppercase"><span className="bg-white px-2 text-slate-400 font-bold">หรือใช้ระบบ Google จริง</span></div>
+                  </div>
+
+                  {/* Real Google Account */}
+                  <button 
+                    onClick={handleRealGoogleLogin}
+                    className="w-full text-left p-3 rounded-xl border border-slate-200 hover:bg-slate-50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.85z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.85c.87-2.6 3.3-4.53 6.16-4.53z" />
+                    </svg>
+                    <span className="text-[11px] font-bold text-slate-700">เชื่อมต่อผ่าน Google Portal (จริง)</span>
+                  </button>
+                </div>
+
+                {/* Footer with close button */}
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end shrink-0">
+                  <button 
+                    onClick={() => setIsLoginModalOpen(false)}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-[11px] font-bold shadow-sm transition-all text-slate-700 cursor-pointer"
+                  >
+                    ยกเลิก
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[#F4F6F9] text-[#0F1A2E] font-sans overflow-hidden">
